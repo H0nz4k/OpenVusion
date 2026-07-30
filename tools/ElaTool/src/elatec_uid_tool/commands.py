@@ -1,9 +1,11 @@
 from . import analysis_commands as analysis
+from . import logic_analyzer_commands as logic_analyzer
 from . import reader_commands as reader
 
 command_analyze = analysis.command_analyze
 command_capture = analysis.command_capture
 command_interactive = analysis.command_interactive
+command_logic_analyzer = logic_analyzer.command_logic_analyzer
 command_prepare_reader = reader.command_prepare_reader
 command_reader_info = reader.command_reader_info
 command_test_medium = reader.command_test_medium

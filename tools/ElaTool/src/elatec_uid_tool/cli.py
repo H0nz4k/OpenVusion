@@ -8,6 +8,7 @@ from .commands import (
     command_analyze,
     command_capture,
     command_interactive,
+    command_logic_analyzer,
     command_prepare_reader,
     command_reader_info,
     command_test_medium,
@@ -95,6 +96,33 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("update-reader")
     p.add_argument("--devpack", default="files520")
     p.set_defaults(func=command_update_reader)
+
+    p = sub.add_parser(
+        "logic-analyzer",
+        help="Read-only NFC Logic Analyzer (session + SRAM timeline)",
+    )
+    p.add_argument("--port", default="auto")
+    p.add_argument("--duration", type=float, default=5.0, help="Délka capture v sekundách")
+    p.add_argument(
+        "--interval-ms",
+        type=float,
+        default=50.0,
+        help="Cílový interval vzorkování v milisekundách",
+    )
+    p.add_argument(
+        "--output-dir",
+        default="captures/logic-analyzer",
+        help="Kořenový adresář pro výstupy capture",
+    )
+    p.add_argument(
+        "--watch-eeprom",
+        action="store_true",
+        help="Volitelně sledovat EEPROM stránky 0x30–0x37",
+    )
+    p.add_argument("--verbose", action="store_true")
+    p.add_argument("--timeout", type=float, default=2.0)
+    p.add_argument("--wait", type=float, default=15.0, help="Čekání na tag v sekundách")
+    p.set_defaults(func=command_logic_analyzer)
     return parser
 
 
