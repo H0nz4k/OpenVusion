@@ -1,0 +1,14 @@
+# Lokální a dočasné soubory
+*.tmp
+*.bak
+*.log
+Thumbs.db
+.DS_Store
+
+# Velké nebo citlivé pracovní výstupy
+captures/**/working/
+references/elatec/extracted-temp/
+
+# IDE
+.vscode/
+.idea/
