@@ -6,14 +6,19 @@ import sys
 from . import __version__
 from .commands import (
     command_analyze,
+    command_analyze_application_block,
+    command_application_block,
     command_capture,
+    command_compare_application_blocks,
     command_interactive,
     command_logic_analyzer,
     command_prepare_reader,
     command_reader_info,
     command_test_medium,
+    command_trigger_analysis,
     command_update_reader,
 )
+from .analysis.trigger import SCENARIO_IDS
 from . import ports as _ports
 from .ports import (
     print_ports,
@@ -136,6 +141,48 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--timeout", type=float, default=2.0)
     p.add_argument("--wait", type=float, default=15.0, help="Čekání na tag v sekundách")
     p.set_defaults(func=command_logic_analyzer)
+
+    p = sub.add_parser(
+        "trigger-analysis",
+        help="Read-only RF trigger association analysis for session registers",
+    )
+    p.add_argument("--port", default="auto")
+    p.add_argument("--scenario", choices=SCENARIO_IDS)
+    p.add_argument("--all", action="store_true", help="Spustit všechny scénáře")
+    p.add_argument("--duration", type=float, default=2.0)
+    p.add_argument("--interval-ms", type=float, default=50.0)
+    p.add_argument("--settle-ms", type=float, default=1500.0)
+    p.add_argument("--repetitions", type=int, default=3)
+    p.add_argument("--output-dir", default="captures/trigger-analysis")
+    p.add_argument("--verbose", action="store_true")
+    p.add_argument("--timeout", type=float, default=2.0)
+    p.add_argument("--wait", type=float, default=15.0)
+    p.set_defaults(func=command_trigger_analysis)
+
+    p = sub.add_parser(
+        "application-block",
+        help="Read-only read+analyze EEPROM application block 0x30–0x37 from tag",
+    )
+    p.add_argument("--port", default="auto")
+    p.add_argument("--timeout", type=float, default=2.0)
+    p.add_argument("--output", default=None, help="Volitelný JSON výstup")
+    p.set_defaults(func=command_application_block)
+
+    p = sub.add_parser(
+        "analyze-application-block",
+        help="Analyze application block 0x30–0x37 from JSON/BIN dump",
+    )
+    p.add_argument("dump", help="Cesta k JSON nebo BIN dumpu")
+    p.add_argument("--output", default=None)
+    p.set_defaults(func=command_analyze_application_block)
+
+    p = sub.add_parser(
+        "compare-application-blocks",
+        help="Compare application blocks from two or more dumps",
+    )
+    p.add_argument("dumps", nargs="+", help="Dva nebo více JSON/BIN dumpů")
+    p.add_argument("--output", default=None)
+    p.set_defaults(func=command_compare_application_blocks)
     return parser
 
 

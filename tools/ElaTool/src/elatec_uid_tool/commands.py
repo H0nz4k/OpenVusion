@@ -1,12 +1,18 @@
 from . import analysis_commands as analysis
+from . import application_block_commands as application_block
 from . import logic_analyzer_commands as logic_analyzer
 from . import reader_commands as reader
+from . import trigger_commands as trigger
 
 command_analyze = analysis.command_analyze
+command_analyze_application_block = application_block.command_analyze_application_block
+command_application_block = application_block.command_application_block
 command_capture = analysis.command_capture
+command_compare_application_blocks = application_block.command_compare_application_blocks
 command_interactive = analysis.command_interactive
 command_logic_analyzer = logic_analyzer.command_logic_analyzer
 command_prepare_reader = reader.command_prepare_reader
 command_reader_info = reader.command_reader_info
 command_test_medium = reader.command_test_medium
+command_trigger_analysis = trigger.command_trigger_analysis
 command_update_reader = reader.command_update_reader
