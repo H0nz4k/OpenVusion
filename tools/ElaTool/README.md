@@ -23,8 +23,8 @@ pro analýzu štítků **SES-imagotag VUSION 2.6 BWR GU140** s čipem
 - porovnání dvou NTAG dumpů;
 - čtení konfiguračních registrů;
 - čtení a časové sledování session registrů;
-- read-only čtení 64B SRAM (RF mapování pass-through `0xF0`–`0xFF`);
-- **NFC Logic Analyzer** — společná časová osa session + SRAM (+ volitelně EEPROM).
+- **NFC Logic Analyzer** — výchozí bezpečný session-only režim;
+- experimentální (neověřený) pokus o RF čtení SRAM, vypnutý ve výchozím stavu.
 
 ## Potvrzený testovaný tag
 
@@ -134,9 +134,9 @@ run_tests.bat
 
 ## NFC Logic Analyzer (read-only)
 
-Sleduje session registry a 64B SRAM na **společné časové ose sekvenčně
-provedených měření** (ne simultánní záznam). První verze je CLI-only a
-striktně read-only.
+Sleduje session registry na **společné časové ose sekvenčně provedených
+měření**. Výchozí režim je **session-only**. SRAM přes RF je experimentální
+a ve výchozím stavu vypnutá.
 
 ### Požadavky
 
@@ -144,27 +144,41 @@ striktně read-only.
 - Python 3.10+ a nainstalovaný `elatec-uid-tool`;
 - štítek NTAG I²C Plus (testováno na VUSION 2.6 BWR GU140).
 
-### Spuštění
-
-```bash
-python -m elatec_uid_tool logic-analyzer --port COM6
-```
-
-S parametry:
+### Bezpečný fyzický test (session-only)
 
 ```bash
 python -m elatec_uid_tool logic-analyzer \
   --port COM6 \
   --duration 5 \
   --interval-ms 50 \
-  --output-dir captures/logic-analyzer \
+  --session-only \
   --verbose
 ```
 
-Volitelné sledování aplikačního EEPROM bloku `0x30`–`0x37`:
+Bez `--session-only` je chování stejné: SRAM zůstává vypnutá, dokud ji
+výslovně nezapneš.
+
+### Experimentální SRAM (neověřeno)
 
 ```bash
-python -m elatec_uid_tool logic-analyzer --port COM6 --watch-eeprom
+python -m elatec_uid_tool logic-analyzer \
+  --port COM6 \
+  --duration 5 \
+  --interval-ms 50 \
+  --enable-experimental-sram \
+  --verbose
+```
+
+CLI vypíše varování. Fyzický test 2026-07-31 ukázal, že
+`FAST_READ 3A F0 FF` na NTAG I²C Plus 1K s `NC_REG=0x19` vrací Type-2 NAK
+(*invalid address or command range*) a může rozbít následující RF session.
+Při NAK nástroj SRAM sampler **deaktivuje**, provede `SearchTag` recovery
+a pokračuje v session samplingu.
+
+Volitelné EEPROM `0x30`–`0x37`:
+
+```bash
+python -m elatec_uid_tool logic-analyzer --port COM6 --session-only --watch-eeprom
 ```
 
 | Parametr | Výchozí | Význam |
@@ -173,8 +187,12 @@ python -m elatec_uid_tool logic-analyzer --port COM6 --watch-eeprom
 | `--duration` | `5` | délka capture v sekundách |
 | `--interval-ms` | `50` | cílový interval vzorkování |
 | `--output-dir` | `captures/logic-analyzer` | kořen výstupů |
+| `--session-only` | vypnuto* | pouze session registry |
+| `--enable-experimental-sram` | vypnuto | experimentální FAST_READ `0xF0`–`0xFF` |
 | `--watch-eeprom` | vypnuto | sledovat EEPROM `0x30`–`0x37` |
 | `--verbose` | vypnuto | živý výpis změn |
+
+\*Bez experimental flagu je SRAM stejně vypnutá (bezpečný default).
 
 ### Výstup
 
@@ -189,22 +207,27 @@ captures/logic-analyzer/YYYY-MM-DD_HH-MM-SS_<UID>/
   final_eeprom.bin        # jen s --watch-eeprom
 ```
 
-Capture adresáře jsou v Gitu ignorované. Pro další analýzu stačí předat
-celý adresář capture.
+`finish_status` v metadata/report:
 
-### Omezení měření
+- `completed_successfully`
+- `completed_with_errors`
+- `partial`
+- `aborted`
 
-- Session a SRAM se čtou sekvenčně v pořadí `session → SRAM → [EEPROM]`.
-- SRAM přes RF (`FAST_READ 0xF0–0xFF`) je podle NXP datasheetu dostupná
-  v pass-through režimu; mimo něj může tag vrátit NAK nebo nuly.
-- Lokální fyzické ověření SRAM mapování ještě probíhá.
-- Interval je přibližný; při pomalém RF se zpoždění zaznamená, bez dohánění.
+Capture adresáře jsou v Gitu ignorované.
+
+### Omezení měření / SRAM
+
+- Podle NXP datasheetu je RF přístup k SRAM (`0xF0`–`0xFF`) platný jen při
+  zapnutém pass-through; alternativně přes SRAM mirror do user memory.
+- Tento nástroj **nezapisuje** registry a **nezapíná** pass-through ani mirror.
+- Fyzický test: `FAST_READ F0–FF` byl odmítnut jako invalid address.
+- Proto SRAM není součástí výchozího workflow.
 
 ### Hypotéza
 
-Elektronika štítku může při RF aktivitě měnit session registry a v aktivním
-okně (`NC_REG≈0x7C`) používat pass-through / SRAM. Jde o **hypotézu**,
-nikoli potvrzený fakt.
+Elektronika štítku může při RF aktivitě měnit session registry a dočasně
+zapínat pass-through. Jde o **hypotézu**, nikoli potvrzený fakt.
 
 Podrobnosti: [docs/NFC_LOGIC_ANALYZER.md](docs/NFC_LOGIC_ANALYZER.md).
 
@@ -280,10 +303,10 @@ session registry nebo SRAM.
 
 ## Plán dalšího vývoje
 
-1. fyzicky ověřit SRAM `FAST_READ F0–FF` na referenčním štítku;
-2. offline analýza timeline (korelace session ↔ SRAM);
-3. sjednotit legacy skripty jako tenké wrappery nad CLI;
-4. později připojit ElaTool k rozhraní OpenVusion.
+1. session-only fyzická měření změn `NC_REG`/`NS_REG`;
+2. pozorovat, zda host sám zapne pass-through/mirror (bez zápisu z RF);
+3. offline analýza timeline;
+4. sjednotit legacy skripty jako tenké wrappery nad CLI.
 
 ## Bezpečnost
 

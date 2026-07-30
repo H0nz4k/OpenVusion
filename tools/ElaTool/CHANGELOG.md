@@ -9,12 +9,21 @@ a verzování používá [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Added
 
 - Read-only NFC Logic Analyzer (`python -m elatec_uid_tool logic-analyzer`)
-  se společnou časovou osou session registrů a 64B SRAM.
-- `NtagI2CPlus.fast_read`, `read_session_registers` a `read_sram`
-  (RF stránky `0xF0`–`0xFF` dle NXP datasheetu, pass-through mapování).
+  s výchozím bezpečným session-only režimem.
+- `NtagI2CPlus.fast_read`, `read_session_registers` a experimentální `read_sram`.
 - Export capture do `metadata.json`, `timeline.jsonl`, `samples.csv` a `report.txt`.
 - Volitelné sledování EEPROM `0x30`–`0x37` přes `--watch-eeprom`.
-- Unit testy change detection, serializace, CLI parseru a scripted transportu.
+- CLI flagy `--session-only` a `--enable-experimental-sram`.
+- Finish status: `completed_successfully` / `completed_with_errors` /
+  `partial` / `aborted`.
+- Unit testy change detection, serializace, CLI parseru, NAK recovery
+  a scripted transportu.
+
+### Fixed
+
+- SRAM `FAST_READ 0xF0–0xFF` už není výchozí ani považována za ověřenou.
+  Fyzický test 2026-07-31 vrátil Type-2 NAK (invalid address) a spouštěl
+  lavinu timeoutů; po NAK se SRAM sampler vypne a provede SearchTag recovery.
 
 ### Documentation
 

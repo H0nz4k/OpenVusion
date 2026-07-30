@@ -162,3 +162,43 @@ python -m elatec_uid_tool logic-analyzer --port COM6 --duration 5 --interval-ms 
 
 Pak zkontrolovat `timeline.jsonl` na `session_changed` a případné `sram_sample` /
 `sram_changed` v aktivním okně.
+
+---
+
+## 2026-07-31 — Oprava po fyzickém testu SRAM NAK
+
+### Příčina
+
+Capture `2026-07-31_00-32-02_04367F5A2D7280`:
+
+1. Session `FAST_READ EC–ED` OK (`NC_REG=0x19`).
+2. `FAST_READ F0–FF` → Type-2 NAK invalid address.
+3. Slepá opakování SRAM i session → timeout lavina (16 RF chyb).
+4. `finish_reason=completed` byl zavádějící (0 platných SRAM stavů).
+
+NXP: RF mapa F0–FF platí jen při pass-through. Nástroj pass-through
+nezapíná (read-only) → přímé čtení SRAM není v běžném stavu dostupné.
+
+### Provedené změny
+
+- Výchozí režim: session-only; SRAM jen `--enable-experimental-sram`.
+- Po SRAM NAK: `sampler_disabled` + okamžitý `SearchTag` recovery.
+- Session sampler pokračuje bez laviny timeoutů.
+- `finish_status`: completed_successfully / completed_with_errors /
+  partial / aborted.
+- Report/metadata: success/failure počty per sampler.
+- Dokumentace opravená: F0–FF není fyzicky ověřený přístup.
+
+### Spuštěné testy
+
+```text
+python -m unittest discover -s tests -v
+```
+
+Výsledek: **25 tests OK**.
+
+### Doporučený další fyzický test
+
+```bash
+python -m elatec_uid_tool logic-analyzer --port COM6 --duration 5 --interval-ms 50 --session-only --verbose
+```
