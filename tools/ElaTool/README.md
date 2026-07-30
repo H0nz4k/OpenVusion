@@ -305,14 +305,14 @@ session registry nebo SRAM.
 
 ## Trigger Analysis
 
-Hledá asociace mezi RF operacemi a přechodem session registrů
-`0x19/0x01 → 0x7C/0x29`. Neprohlašuje confirmed kauzalitu.
+Hledá asociace mezi RF operacemi a session cyklem
+`0x19/0x01 → 0x7C/0x41 → 0x7C/0x29 → 0x19/0x01`.
+Neprohlašuje confirmed kauzalitu.
 
-Baseline používá **first-sample** model: jeden platný `0x19/0x01` stačí.
-Více consecutive baseline reads není povinné — session read sám spouští
-aktivní okno. Po settle cyklu `baseline → active → baseline` následuje
-krátká `--guard-ms` prodleva. Scénář `select-only` měří `SearchTag` jako
-trigger; `repeated-session-only` bere první session read jako t=0.
+Stavy: baseline (`0x19/0x01`), intermediate (`0x7C/0x41`), active (`0x7C/0x29`).
+Baseline je **first-sample**; `active_window_us` = celkové non-baseline okno.
+Fyzický retest ukazuje spíš obecnou RF/select asociaci než unikátní příkaz.
+`SearchTag rf_duration_us` je transport/API čas, ne čistý RF frame.
 
 ```bash
 python -m elatec_uid_tool trigger-analysis --port COM6 --all --verbose

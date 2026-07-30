@@ -8,88 +8,114 @@ session registrů NTAG I²C Plus 1K.
 Pozorované stavy (referenční VUSION štítek):
 
 ```text
-baseline: NC_REG=0x19  NS_REG=0x01
-active:   NC_REG=0x7C  NS_REG=0x29
+baseline:      NC_REG=0x19  NS_REG=0x01
+intermediate:  NC_REG=0x7C  NS_REG=0x41
+active:        NC_REG=0x7C  NS_REG=0x29
+```
+
+Typická sekvence:
+
+```text
+0x19/0x01 → 0x7C/0x41 → 0x7C/0x29 → 0x19/0x01
 ```
 
 Cílem je zjistit, která RF operace nebo sekvence s přechodem **souvisí**,
 nikoli definitivně prokázat kauzalitu v izolovaném RF poli.
 
+Fyzický `--all` retest ukázal, že téměř všechny RF scénáře vykazují stejný
+cyklus; nejsilnější pracovní závěr je **obecná asociace s RF aktivitou /
+selectem**, nikoli unikátní magic command.
+
+## Stavový model
+
+| Stav | NC | NS | Poznámka |
+|---|---|---|---|
+| `baseline` | `0x19` | `0x01` | klid |
+| `intermediate` | `0x7C` | `0x41` | mezistav před kanonickým active |
+| `active` | `0x7C` | `0x29` | kanonický active |
+| `other` | jiné | jiné | neznámé; **ne** „všechno s NC=0x7C“ |
+
+Detekované cykly:
+
+- `baseline → intermediate → active → baseline` — canonical active cycle
+- `baseline → active → baseline` — canonical active cycle
+- `baseline → intermediate → baseline` — **observed transitional cycle**
+  (ne canonical active)
+
 ## Baseline model (first-sample)
 
-Fyzický `--all` test ukázal, že **session read sám vyvolává** přechod
-`baseline → active (~50–120 ms) → baseline (~1,1 s)`. Požadavek na více
-po sobě jdoucích baseline vzorků proto není na tomto hardware splnitelný.
+Session read sám vyvolává non-baseline okno. Platné metody:
 
-Platné metody baseline (pole `baseline_method`):
-
-| Metoda | Význam | Povinná pro scénář? |
+| Metoda | Význam | Povinná? |
 |---|---|---|
-| `baseline_observed` | jeden platný vzorek `0x19/0x01` | ano, stačí |
-| `baseline_confirmed_after_return` | settle viděl `baseline → active → baseline` (`completed_active_cycle`) + `--guard-ms` | preferovaná |
-| `baseline_stable_by_multiple_reads` | ≥2 consecutive baseline reads | **ne** — pouze volitelná anotace |
+| `baseline_observed` | jeden platný `0x19/0x01` | ano, stačí |
+| `baseline_confirmed_after_return` | settle viděl non-baseline cyklus + `--guard-ms` | preferovaná |
+| `baseline_stable_by_multiple_reads` | ≥2 consecutive baseline | **ne** |
 
-Jeden baseline vzorek **není** automaticky `contaminated` ani `inconclusive`.
+`contaminated` pouze: aktivní/intermediate/unknown pre-trigger, nedokončený
+cyklus, RF chyba před triggerem.
 
-### Contaminated pouze když
+## Metriky opakování
 
-- pre-trigger stav je aktivní `0x7C/0x29`;
-- stav je neznámý;
-- probíhá neukončený aktivní cyklus na konci settle;
-- RF chyba před trigger operací.
+| Pole | Význam |
+|---|---|
+| `first_nonbaseline_us` | vstup do non-baseline (i přes intermediate) |
+| `first_transition_us` | alias `first_nonbaseline_us` (compat) |
+| `intermediate_enter_us` | vstup do `0x7C/0x41` |
+| `active_enter_us` | vstup do `0x7C/0x29` |
+| `return_us` | návrat na baseline |
+| `intermediate_duration_us` | intermediate → active (nebo → return) |
+| `canonical_active_duration_us` | active → return |
+| `total_nonbaseline_window_us` | first non-baseline → return |
+| `active_window_us` | **compat alias** `total_nonbaseline_window_us` |
+| `intermediate_observed` / `canonical_active_observed` | bool |
+| `returned_to_baseline` | bool |
+| `cycle_kind` | `canonical_active_cycle` / `transitional_cycle` / … |
 
 ## Scénáře
 
-| ID | Trigger operace (`rf_operation`) |
+| ID | Trigger operace |
 |---|---|
-| `select-only` | `SearchTag` (reselect **je** trigger, ne skrytá příprava) |
+| `select-only` | `SearchTag` (je trigger, ne skrytá příprava) |
 | `get-version` | `GET_VERSION 0x60` |
-| `read-page-00` | `READ` od stránky `0x00` |
+| `read-page-00` | `READ` stránky `0x00` |
 | `read-application-block` | `FAST_READ 0x30–0x37` |
 | `read-session` | `FAST_READ 0xEC–0xED` |
-| `get-version-then-session` | GET_VERSION + session read |
-| `repeated-session-only` | první session read = trigger t=0; další = observation |
+| `get-version-then-session` | GET_VERSION + session |
+| `repeated-session-only` | první session read = t=0 |
 
 SRAM se **nepoužívá**.
 
-## Průběh scénáře
+`SearchTag rf_duration_us` je **transport/API wall time** (často stovky ms),
+nikoli čistá doba RF rámce.
 
-1. Settle (`--settle-ms`): first-sample baseline; preferuj completed cycle + `--guard-ms`.
-2. Přípravný reselect (`SearchTag`) — **kromě** `select-only`.
-3. Maximálně **jeden** pre-trigger session read (přeskočen u `select-only`,
-   `read-session`, `repeated-session-only`). Zaznamenán jako
-   `measurement_interference_possible=true`.
-4. Provedení trigger operace (`trigger_executed=true`) s `rf_duration_us`.
-5. Post-op session sample (`post_op_hex`, pokud relevantní).
-6. Monitoring session po `duration` s intervalem `interval-ms` → `samples`,
-   `first_transition_us`, `return_us`, `transition_count`.
-7. Opakování (`repetitions`).
+## Agregace
 
-Pokud `trigger_executed=false`, report uvádí explicitní důvod a opakování
-**nevstupuje** do trigger statistik.
+- `transition_repetitions` — úplné non-baseline cykly (canonical nebo transitional)
+- `canonical_active_repetitions` — výskyt `0x7C/0x29`
+- `intermediate_repetitions` — výskyt `0x7C/0x41`
+- `state_counts` — počty sample stavů (baseline / intermediate / active / other)
 
-## Metadata výsledku (schema 2)
-
-Klíčová pole opakování:
-
-- `measurement_interference_possible`
-- `baseline_method`
-- `baseline_sample_count`
-- `pre_trigger_state`
-- `trigger_executed`
-- `rf_duration_us`, `post_op_hex`, `samples`
-- `first_transition_us`, `return_us`, `transition_count`
-
-## Stupně závěru
+### Slovník závěrů (per-scenario)
 
 | Stupeň | Význam |
 |---|---|
-| `observed association` | alespoň jedno **executed** opakování ukázalo přechod po akci |
-| `repeatable association` | přechod ve většině čistých executed opakování |
-| `probable trigger` | silná opakovatelnost + čistá baseline, stále bez izolovaného RF |
-| `inconclusive` | žádné executed, kontaminace, chyby, chybějící návrat |
+| `observed association` | alespoň jeden úplný cyklus |
+| `repeatable association` | cyklus ve většině clean executed opakování |
+| `general RF association` | sdílený pattern se select-only a většinou ostatních scénářů |
+| `inconclusive` | žádný úplný cyklus / chyby / kontaminace |
 
-**Nepoužívat** `confirmed trigger` bez skutečně izolovaného RF pole.
+**Nepoužívat** `probable trigger` jen proto, že 3/3 běhy jednoho scénáře
+ukázaly přechod, pokud stejný přechod ukazují i ostatní RF operace.
+
+### Globální závěr
+
+Pokud `select-only` i většina ostatních scénářů vykazují obdobný cyklus:
+
+> Results are consistent with a general RF/select-associated host wake-up,
+> not a command-specific trigger.
+
+Formulováno jako asociace, ne potvrzená kauzalita.
 
 ## CLI
 
@@ -97,7 +123,7 @@ Klíčová pole opakování:
 python -m elatec_uid_tool trigger-analysis --port COM6 --all --verbose
 
 python -m elatec_uid_tool trigger-analysis \
-  --port COM6 --scenario get-version --repetitions 3 --verbose
+  --port COM6 --scenario get-version --repetitions 3 --guard-ms 200 --verbose
 ```
 
 Parametry: `--scenario`, `--all`, `--duration` (2), `--interval-ms` (50),
@@ -117,7 +143,6 @@ captures/trigger-analysis/<timestamp>_<UID>/
 
 ## Omezení izolace
 
-- ELATEC RF pole zůstává aktivní; host MCU štítku může reagovat autonomně.
-- Session čtení pro settle/probe samo interferuje (`measurement_interference_possible`).
-- Předchozí scénář může kontaminovat následující (proto settle + reselect).
+- ELATEC RF pole zůstává aktivní; host MCU může reagovat autonomně.
+- Session čtení pro settle/probe interferuje (`measurement_interference_possible`).
 - Výsledky jsou asociační, ne kauzální důkaz.

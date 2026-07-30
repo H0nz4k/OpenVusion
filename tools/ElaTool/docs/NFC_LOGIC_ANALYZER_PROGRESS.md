@@ -276,3 +276,38 @@ python -m compileall -q src
 ```bash
 python -m elatec_uid_tool trigger-analysis --port COM6 --all --verbose
 ```
+
+---
+
+## 2026-07-31 — Intermediate state + general RF association
+
+### Fyzické zjištění (capture `2026-07-31_01-37-24_04367F5A2D7280`)
+
+- Baseline redesign OK: 21/21 executed, 0 contaminated, ~1,15 s okno.
+- Mezistav `NC=0x7C NS=0x41` před kanonickým `0x7C/0x29` rozbíjel detekci
+  (`read-page-00` a get-version #2 falešně inconclusive).
+- Stejný cyklus u většiny RF scénářů → obecná RF/select asociace, ne magic cmd.
+- SearchTag `rf_duration_us` ~824 ms = transport/API, ne čistý RF frame.
+
+### Oprava
+
+- Stavy: baseline / intermediate / active / other (bez „NC=0x7C ⇒ active“).
+- Metriky: `first_nonbaseline_us`, `intermediate_enter_us`, `active_enter_us`,
+  `total_nonbaseline_window_us`, …; `active_window_us` = total non-baseline.
+- Agregace: `transition_repetitions`, `canonical_active_repetitions`,
+  `intermediate_repetitions`, `state_counts`.
+- Závěry: observed / repeatable / **general RF association**;
+  globální věta o host wake-up asociaci.
+
+### Testy
+
+```text
+python -m unittest discover -s tests -v
+python -m compileall -q src
+```
+
+### Doporučený fyzický retest
+
+```bash
+python -m elatec_uid_tool trigger-analysis --port COM6 --all --verbose
+```

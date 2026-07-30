@@ -36,6 +36,12 @@ a verzování používá [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
   completed_active_cycle + `--guard-ms`; `select-only` a
   `repeated-session-only` mají správnou trigger semantiku; statistiky
   počítají jen `trigger_executed=true`.
+- Trigger Analysis stavový automat: explicitní intermediate `0x7C/0x41`.
+  Cyklus `baseline → intermediate → active → baseline` už nekončí falešně
+  inconclusive (např. `read-page-00`). Přidány metriky
+  `first_nonbaseline_us` / `intermediate_enter_us` / `active_enter_us` /
+  `total_nonbaseline_window_us`; závěr `general RF association` místo
+  nadneseného `probable trigger`.
 
 ### Documentation
 
