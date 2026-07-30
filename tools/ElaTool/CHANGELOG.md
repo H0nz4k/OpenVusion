@@ -29,6 +29,13 @@ a verzování používá [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - SRAM `FAST_READ 0xF0–0xFF` už není výchozí ani považována za ověřenou.
   Fyzický test 2026-07-31 vrátil Type-2 NAK (invalid address) a spouštěl
   lavinu timeoutů; po NAK se SRAM sampler vypne a provede SearchTag recovery.
+- Trigger Analysis baseline: odstraněn povinný multi-read settle.
+  Session read sám vyvolává `0x19/0x01 → 0x7C/0x29 → 0x19/0x01`, takže
+  požadavek na consecutive baseline vzorky ukončoval všechny scénáře jako
+  contaminated ještě před triggerem. Nově stačí first-sample baseline /
+  completed_active_cycle + `--guard-ms`; `select-only` a
+  `repeated-session-only` mají správnou trigger semantiku; statistiky
+  počítají jen `trigger_executed=true`.
 
 ### Documentation
 

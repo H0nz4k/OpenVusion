@@ -308,11 +308,17 @@ session registry nebo SRAM.
 Hledá asociace mezi RF operacemi a přechodem session registrů
 `0x19/0x01 → 0x7C/0x29`. Neprohlašuje confirmed kauzalitu.
 
+Baseline používá **first-sample** model: jeden platný `0x19/0x01` stačí.
+Více consecutive baseline reads není povinné — session read sám spouští
+aktivní okno. Po settle cyklu `baseline → active → baseline` následuje
+krátká `--guard-ms` prodleva. Scénář `select-only` měří `SearchTag` jako
+trigger; `repeated-session-only` bere první session read jako t=0.
+
 ```bash
 python -m elatec_uid_tool trigger-analysis --port COM6 --all --verbose
 
 python -m elatec_uid_tool trigger-analysis \
-  --port COM6 --scenario get-version --repetitions 3 --verbose
+  --port COM6 --scenario get-version --repetitions 3 --guard-ms 200 --verbose
 ```
 
 Výstup: `captures/trigger-analysis/<timestamp>_<UID>/`

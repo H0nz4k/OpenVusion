@@ -238,3 +238,41 @@ Výsledek: **38 tests OK**, compileall OK. Ověřen načtený `dump_A.json`
 python -m elatec_uid_tool trigger-analysis --port COM6 --all --verbose
 python -m elatec_uid_tool application-block --port COM6
 ```
+
+---
+
+## 2026-07-31 — Trigger baseline redesign (first-sample)
+
+### Fyzické zjištění
+
+`--all` běh: první FAST_READ EC ED → baseline `0x19/0x01`; další session
+read (~50–120 ms) → active `0x7C/0x29`; po ~1,1 s návrat do baseline;
+po reselectu jeden baseline vzorek byl označen `stable=false` /
+`contaminated=true` → scénář skončil před triggerem; všech 21 opakování
+inconclusive bez `rf_duration_us` / samples.
+
+### Oprava
+
+- First-sample baseline: jeden `0x19/0x01` je platný start.
+- Metody: `baseline_observed`, `baseline_confirmed_after_return`,
+  `baseline_stable_by_multiple_reads` (poslední není povinná).
+- Settle `baseline → active → baseline` = `completed_active_cycle` + `--guard-ms`.
+- Po reselectu max. jeden pre-trigger session probe; žádná série před triggerem.
+- `contaminated` jen pro active/unknown pre-trigger, nedokončený cyklus, RF chybu.
+- `select-only`: SearchTag je trigger (`rf_operation`).
+- `repeated-session-only`: první session read = trigger t=0.
+- Nová pole: `measurement_interference_possible`, `baseline_method`,
+  `baseline_sample_count`, `pre_trigger_state`, `trigger_executed`.
+
+### Testy
+
+```text
+python -m unittest discover -s tests -v
+python -m compileall -q src
+```
+
+### Doporučený fyzický retest
+
+```bash
+python -m elatec_uid_tool trigger-analysis --port COM6 --all --verbose
+```
