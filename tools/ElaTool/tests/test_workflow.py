@@ -11,8 +11,11 @@ class WorkflowTests(unittest.TestCase):
         parser = build_parser()
         self.assertEqual(parser.parse_args(["test-medium"]).port, "auto")
         self.assertEqual(parser.parse_args(["update-reader"]).devpack, "files520")
-        self.assertEqual(parser.parse_args(["logic-analyzer"]).port, "auto")
-        self.assertEqual(parser.parse_args(["logic-analyzer"]).duration, 5.0)
+        la = parser.parse_args(["logic-analyzer"])
+        self.assertEqual(la.port, "auto")
+        self.assertEqual(la.duration, 5.0)
+        self.assertFalse(la.enable_experimental_sram)
+        self.assertFalse(la.session_only)  # flag optional; SRAM still off by default
 
     def test_single_reader_is_automatic(self):
         ports = [("COM13", "Serial RFID Device", "USB VID:PID=09D8:0420")]
