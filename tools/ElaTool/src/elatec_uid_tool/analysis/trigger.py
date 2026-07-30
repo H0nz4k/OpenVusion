@@ -19,8 +19,15 @@ from ..protocol import ElatecError, SerialCommunicationError, SimpleProtocolClie
 
 BASELINE_NC = 0x19
 BASELINE_NS = 0x01
+INTERMEDIATE_NC = 0x7C
+INTERMEDIATE_NS = 0x41
 ACTIVE_NC = 0x7C
 ACTIVE_NS = 0x29
+
+STATE_BASELINE = "baseline"
+STATE_INTERMEDIATE = "intermediate"
+STATE_ACTIVE = "active"
+STATE_OTHER = "other"
 
 SCENARIO_IDS = (
     "select-only",
@@ -32,7 +39,6 @@ SCENARIO_IDS = (
     "repeated-session-only",
 )
 
-# Scenarios where SearchTag/reselect is preparation, not the measured trigger.
 SCENARIOS_WITH_PREP_RESELECT = (
     "get-version",
     "read-page-00",
@@ -42,7 +48,6 @@ SCENARIOS_WITH_PREP_RESELECT = (
     "repeated-session-only",
 )
 
-# Pre-trigger session probe would itself be a session read / interference.
 SCENARIOS_SKIP_PRE_TRIGGER_PROBE = (
     "select-only",
     "read-session",
@@ -51,12 +56,23 @@ SCENARIOS_SKIP_PRE_TRIGGER_PROBE = (
 
 CONCLUSION_OBSERVED = "observed association"
 CONCLUSION_REPEATABLE = "repeatable association"
-CONCLUSION_PROBABLE = "probable trigger"
+CONCLUSION_GENERAL_RF = "general RF association"
+CONCLUSION_PROBABLE = "probable trigger"  # retained for import compat; not assigned
 CONCLUSION_INCONCLUSIVE = "inconclusive"
+
+CYCLE_CANONICAL = "canonical_active_cycle"
+CYCLE_TRANSITIONAL = "transitional_cycle"
+CYCLE_INCOMPLETE = "incomplete"
+CYCLE_NONE = "none"
 
 BASELINE_OBSERVED = "baseline_observed"
 BASELINE_CONFIRMED_AFTER_RETURN = "baseline_confirmed_after_return"
 BASELINE_STABLE_MULTI = "baseline_stable_by_multiple_reads"
+
+GLOBAL_RF_CONCLUSION = (
+    "Results are consistent with a general RF/select-associated host wake-up, "
+    "not a command-specific trigger."
+)
 
 
 @dataclass
@@ -137,7 +153,7 @@ class TriggerAnalysis:
         )
         self._t0_ns = self._clock_ns()
         metadata: dict[str, Any] = {
-            "schema": 2,
+            "schema": 3,
             "tool": "trigger-analysis",
             "read_only": True,
             "uses_sram": False,
@@ -149,12 +165,33 @@ class TriggerAnalysis:
             "guard_ms": config.guard_ms,
             "repetitions": config.repetitions,
             "scenarios": list(config.scenarios),
+            "states": {
+                "baseline": {"NC_REG": BASELINE_NC, "NS_REG": BASELINE_NS},
+                "intermediate": {
+                    "NC_REG": INTERMEDIATE_NC,
+                    "NS_REG": INTERMEDIATE_NS,
+                },
+                "active": {"NC_REG": ACTIVE_NC, "NS_REG": ACTIVE_NS},
+            },
             "baseline": {"NC_REG": BASELINE_NC, "NS_REG": BASELINE_NS},
             "active": {"NC_REG": ACTIVE_NC, "NS_REG": ACTIVE_NS},
+            "intermediate": {
+                "NC_REG": INTERMEDIATE_NC,
+                "NS_REG": INTERMEDIATE_NS,
+            },
             "baseline_policy": (
                 "first-sample baseline is valid; multiple consecutive baseline "
                 "reads are optional because session reads themselves may trigger "
-                "the active window"
+                "the non-baseline window"
+            ),
+            "active_window_us_meaning": (
+                "active_window_us equals total_nonbaseline_window_us "
+                "(first non-baseline sample → return to baseline), not only "
+                "canonical 0x7C/0x29 dwell time"
+            ),
+            "searchtag_duration_note": (
+                "SearchTag rf_duration_us is transport/API wall time "
+                "(may be hundreds of ms), not pure RF-frame duration"
             ),
             "isolation_note": (
                 "Best-effort settle/reselect only. Not an isolated RF field; "
@@ -192,6 +229,8 @@ class TriggerAnalysis:
 
             for scenario in config.scenarios:
                 aggregates[scenario] = self._run_scenario(ntag, scenario)
+
+            self._apply_global_conclusions(aggregates, metadata)
         finally:
             metadata["finished_at"] = self._wall_clock()
             metadata["aggregates"] = aggregates
@@ -223,7 +262,9 @@ class TriggerAnalysis:
                 f"[aggregate] {scenario}: {aggregate['conclusion']} "
                 f"(executed={aggregate['executed_repetitions']}/"
                 f"{aggregate['repetitions']}, "
-                f"transitions={aggregate['transition_repetitions']})"
+                f"transitions={aggregate['transition_repetitions']}, "
+                f"canonical={aggregate['canonical_active_repetitions']}, "
+                f"intermediate={aggregate['intermediate_repetitions']})"
             )
         return aggregate
 
@@ -255,12 +296,21 @@ class TriggerAnalysis:
             "rf_operation": None,
             "rf_duration_us": None,
             "post_op_hex": None,
+            "first_nonbaseline_us": None,
             "first_transition_us": None,
+            "intermediate_enter_us": None,
+            "active_enter_us": None,
             "return_us": None,
+            "intermediate_duration_us": None,
+            "canonical_active_duration_us": None,
+            "total_nonbaseline_window_us": None,
             "active_window_us": None,
             "transition_count": 0,
+            "intermediate_observed": False,
+            "canonical_active_observed": False,
             "active_observed": False,
             "returned_to_baseline": False,
+            "cycle_kind": CYCLE_NONE,
             "errors": [],
             "verdict": CONCLUSION_INCONCLUSIVE,
             "samples": [],
@@ -283,8 +333,8 @@ class TriggerAnalysis:
 
         if settle.unfinished_active_cycle:
             result["contaminated"] = True
-            result["pre_trigger_state"] = "active"
-            result["note"] = "Unfinished active cycle at end of settle."
+            result["pre_trigger_state"] = settle.last_state or "active"
+            result["note"] = "Unfinished non-baseline cycle at end of settle."
             result["trigger_executed"] = False
             return self._finish_repetition(result, scenario, repetition)
 
@@ -300,7 +350,6 @@ class TriggerAnalysis:
         baseline_snapshot = settle.last_sample
         result["baseline_hex"] = baseline_snapshot.hex(" ").upper()
 
-        # Preparatory reselect — not used for select-only (SearchTag is the trigger).
         if scenario in SCENARIOS_WITH_PREP_RESELECT:
             result["reselected"] = self._reselect(ntag.client)
             if not result["reselected"]:
@@ -309,7 +358,6 @@ class TriggerAnalysis:
                 result["trigger_executed"] = False
                 return self._finish_repetition(result, scenario, repetition)
 
-        # At most one pre-trigger session probe (skipped for session/select triggers).
         if scenario not in SCENARIOS_SKIP_PRE_TRIGGER_PROBE:
             try:
                 probe, probe_us = self._timed(ntag.read_session_registers)
@@ -342,6 +390,11 @@ class TriggerAnalysis:
                 result["note"] = "Pre-trigger state is active (0x7C/0x29)."
                 result["trigger_executed"] = False
                 return self._finish_repetition(result, scenario, repetition)
+            if self._is_intermediate(probe):
+                result["contaminated"] = True
+                result["note"] = "Pre-trigger state is intermediate (0x7C/0x41)."
+                result["trigger_executed"] = False
+                return self._finish_repetition(result, scenario, repetition)
             if not self._is_baseline(probe):
                 result["contaminated"] = True
                 result["note"] = f"Pre-trigger state unknown: {result['pre_trigger_state']}."
@@ -351,11 +404,8 @@ class TriggerAnalysis:
             result["baseline_hex"] = probe.hex(" ").upper()
         else:
             result["pre_trigger_state"] = "baseline"
-            # Settle session reads already imply possible interference for
-            # session-based scenarios; select-only settle also used session reads.
             result["measurement_interference_possible"] = True
 
-        # --- Execute trigger ---
         trigger_t0_elapsed: int | None = None
         try:
             if scenario == "repeated-session-only":
@@ -400,6 +450,7 @@ class TriggerAnalysis:
                         "scenario": scenario,
                         "repetition": repetition,
                         "uid": tag.id_hex,
+                        "duration_kind": "transport_api",
                     },
                 )
                 post, post_us = self._timed(ntag.read_session_registers)
@@ -409,7 +460,11 @@ class TriggerAnalysis:
                     rf_operation="FAST_READ 3A EC ED",
                     rf_duration_us=post_us,
                     raw_hex=result["post_op_hex"],
-                    decoded={"phase": "post_action", "scenario": scenario},
+                    decoded={
+                        "phase": "post_action",
+                        "scenario": scenario,
+                        "state": self._classify(post),
+                    },
                 )
             else:
                 op_data, op_us, rf_name = self._execute_scenario_action(ntag, scenario)
@@ -429,7 +484,6 @@ class TriggerAnalysis:
                     raw_hex=raw_hex,
                     decoded={"scenario": scenario, "repetition": repetition},
                 )
-                # For read-session the action already returned session bytes.
                 if scenario == "read-session":
                     post = op_data
                     result["post_op_hex"] = post.hex(" ").upper()
@@ -441,7 +495,11 @@ class TriggerAnalysis:
                         rf_operation="FAST_READ 3A EC ED",
                         rf_duration_us=post_us,
                         raw_hex=result["post_op_hex"],
-                        decoded={"phase": "post_action", "scenario": scenario},
+                        decoded={
+                            "phase": "post_action",
+                            "scenario": scenario,
+                            "state": self._classify(post),
+                        },
                     )
         except (ElatecError, SerialCommunicationError, ValueError, RuntimeError) as exc:
             result["errors"].append(str(exc))
@@ -454,26 +512,27 @@ class TriggerAnalysis:
 
         samples = [
             {
-                "elapsed_us": trigger_t0_elapsed if trigger_t0_elapsed is not None else self._elapsed_us(),
+                "elapsed_us": (
+                    trigger_t0_elapsed
+                    if trigger_t0_elapsed is not None
+                    else self._elapsed_us()
+                ),
                 "raw_hex": result["post_op_hex"],
                 "nc": post[0],
                 "ns": post[6],
                 "state": self._classify(post),
-                "role": "trigger_t0" if scenario in (
-                    "repeated-session-only",
-                    "read-session",
-                ) else "post_action",
+                "role": (
+                    "trigger_t0"
+                    if scenario in ("repeated-session-only", "read-session")
+                    else "post_action"
+                ),
             }
         ]
 
         previous = post
         transitions = 0
-        first_transition_us = None
-        return_us = None
-        if self._is_active(post) and self._is_baseline(baseline_snapshot):
+        if not self._is_baseline(post):
             transitions = 1
-            first_transition_us = samples[0]["elapsed_us"]
-            result["active_observed"] = True
 
         deadline = self._clock_ns() + int(config.duration_s * 1_000_000_000)
         next_sample = self._clock_ns()
@@ -522,29 +581,6 @@ class TriggerAnalysis:
 
             if previous != current:
                 transitions += 1
-                if (
-                    first_transition_us is None
-                    and self._is_baseline(previous)
-                    and self._is_active(current)
-                ):
-                    first_transition_us = elapsed
-                    result["active_observed"] = True
-                if (
-                    first_transition_us is None
-                    and self._is_baseline(baseline_snapshot)
-                    and self._is_active(current)
-                    and previous == baseline_snapshot
-                ):
-                    first_transition_us = elapsed
-                    result["active_observed"] = True
-                if (
-                    result["active_observed"]
-                    and return_us is None
-                    and self._is_active(previous)
-                    and self._is_baseline(current)
-                ):
-                    return_us = elapsed
-                    result["returned_to_baseline"] = True
             previous = current
             next_sample += interval_ns
             if next_sample < self._clock_ns():
@@ -552,31 +588,111 @@ class TriggerAnalysis:
 
         result["samples"] = samples
         result["transition_count"] = transitions
-        result["first_transition_us"] = first_transition_us
-        result["return_us"] = return_us
-        if first_transition_us is not None and return_us is not None:
-            result["active_window_us"] = return_us - first_transition_us
-
-        if result["active_observed"] and result["returned_to_baseline"]:
-            result["verdict"] = CONCLUSION_OBSERVED
-        elif result["active_observed"] and return_us is None:
-            result["note"] = "Active state observed but no return within duration."
-            result["verdict"] = CONCLUSION_INCONCLUSIVE
-        else:
-            result["verdict"] = CONCLUSION_INCONCLUSIVE
-            result.setdefault("note", "No baseline→active transition observed.")
+        self._apply_cycle_metrics(result, samples)
 
         if self.config.verbose:
             print(
                 f"[{scenario} #{repetition}] "
                 f"executed={result['trigger_executed']} "
-                f"method={result['baseline_method']} "
-                f"active={result['active_observed']} "
+                f"cycle={result['cycle_kind']} "
+                f"inter={result['intermediate_observed']} "
+                f"active={result['canonical_active_observed']} "
                 f"return={result['returned_to_baseline']} "
                 f"verdict={result['verdict']}"
             )
 
         return self._finish_repetition(result, scenario, repetition)
+
+    def _apply_cycle_metrics(
+        self,
+        result: dict[str, Any],
+        samples: list[dict[str, Any]],
+    ) -> None:
+        first_nonbaseline_us: int | None = None
+        intermediate_enter_us: int | None = None
+        active_enter_us: int | None = None
+        return_us: int | None = None
+        intermediate_observed = False
+        canonical_active_observed = False
+        returned_to_baseline = False
+        left_baseline = False
+
+        for sample in samples:
+            state = sample["state"]
+            elapsed = sample["elapsed_us"]
+            if state != STATE_BASELINE:
+                if first_nonbaseline_us is None:
+                    first_nonbaseline_us = elapsed
+                    left_baseline = True
+                if state == STATE_INTERMEDIATE:
+                    intermediate_observed = True
+                    if intermediate_enter_us is None:
+                        intermediate_enter_us = elapsed
+                elif state == STATE_ACTIVE:
+                    canonical_active_observed = True
+                    if active_enter_us is None:
+                        active_enter_us = elapsed
+            elif left_baseline and return_us is None:
+                return_us = elapsed
+                returned_to_baseline = True
+
+        intermediate_duration_us = None
+        if intermediate_enter_us is not None:
+            if active_enter_us is not None:
+                intermediate_duration_us = active_enter_us - intermediate_enter_us
+            elif return_us is not None:
+                intermediate_duration_us = return_us - intermediate_enter_us
+
+        canonical_active_duration_us = None
+        if active_enter_us is not None and return_us is not None:
+            canonical_active_duration_us = return_us - active_enter_us
+
+        total_nonbaseline_window_us = None
+        if first_nonbaseline_us is not None and return_us is not None:
+            total_nonbaseline_window_us = return_us - first_nonbaseline_us
+
+        if (
+            returned_to_baseline
+            and intermediate_observed
+            and canonical_active_observed
+        ):
+            cycle_kind = CYCLE_CANONICAL
+            verdict = CONCLUSION_OBSERVED
+            note = "baseline -> intermediate -> active -> baseline"
+        elif returned_to_baseline and canonical_active_observed:
+            cycle_kind = CYCLE_CANONICAL
+            verdict = CONCLUSION_OBSERVED
+            note = "baseline -> active -> baseline"
+        elif returned_to_baseline and intermediate_observed:
+            cycle_kind = CYCLE_TRANSITIONAL
+            verdict = CONCLUSION_OBSERVED
+            note = "observed transitional cycle (intermediate without canonical active)"
+        elif left_baseline and not returned_to_baseline:
+            cycle_kind = CYCLE_INCOMPLETE
+            verdict = CONCLUSION_INCONCLUSIVE
+            note = "Non-baseline state observed but no return within duration."
+        else:
+            cycle_kind = CYCLE_NONE
+            verdict = CONCLUSION_INCONCLUSIVE
+            note = "No baseline->non-baseline transition observed."
+
+        result["first_nonbaseline_us"] = first_nonbaseline_us
+        result["first_transition_us"] = first_nonbaseline_us
+        result["intermediate_enter_us"] = intermediate_enter_us
+        result["active_enter_us"] = active_enter_us
+        result["return_us"] = return_us
+        result["intermediate_duration_us"] = intermediate_duration_us
+        result["canonical_active_duration_us"] = canonical_active_duration_us
+        result["total_nonbaseline_window_us"] = total_nonbaseline_window_us
+        # Compat: active_window_us == total non-baseline window.
+        result["active_window_us"] = total_nonbaseline_window_us
+        result["intermediate_observed"] = intermediate_observed
+        result["canonical_active_observed"] = canonical_active_observed
+        result["active_observed"] = canonical_active_observed
+        result["returned_to_baseline"] = returned_to_baseline
+        result["cycle_kind"] = cycle_kind
+        result["verdict"] = verdict
+        result["note"] = note
 
     def _finish_repetition(
         self,
@@ -598,6 +714,7 @@ class TriggerAnalysis:
                 "trigger_executed": result.get("trigger_executed"),
                 "contaminated": result.get("contaminated"),
                 "baseline_method": result.get("baseline_method"),
+                "cycle_kind": result.get("cycle_kind"),
                 "note": result.get("note"),
             },
         )
@@ -647,16 +764,11 @@ class TriggerAnalysis:
         raise ValueError(f"Neznámý scénář pro action helper: {scenario}")
 
     def _settle_to_baseline(self, ntag: NtagI2CPlus) -> SettleOutcome:
-        """Settle without requiring consecutive baseline reads.
-
-        A single baseline sample is valid (first-sample baseline). If the settle
-        window observes baseline→active→baseline, that completed cycle is the
-        preferred confirmation, followed by a short guard delay.
-        """
+        """Settle without requiring consecutive baseline reads."""
         deadline = self._clock_ns() + int(self.config.settle_ms * 1_000_000)
         samples: list[bytes] = []
         seen_baseline = False
-        seen_active_after_baseline = False
+        seen_nonbaseline_after_baseline = False
         completed_cycle = False
         first_baseline: bytes | None = None
         consecutive_baseline = 0
@@ -697,27 +809,23 @@ class TriggerAnalysis:
                 if not seen_baseline:
                     seen_baseline = True
                     first_baseline = data
-                if seen_active_after_baseline:
+                if seen_nonbaseline_after_baseline:
                     completed_cycle = True
                     if self.config.guard_ms > 0:
                         self._sleep(self.config.guard_ms / 1000.0)
-                    method = BASELINE_CONFIRMED_AFTER_RETURN
-                    if max_consecutive_baseline >= 2:
-                        # Optional annotation only; method stays after-return.
-                        pass
                     return SettleOutcome(
                         ready=True,
-                        method=method,
+                        method=BASELINE_CONFIRMED_AFTER_RETURN,
                         sample_count=len(samples),
                         completed_active_cycle=True,
                         unfinished_active_cycle=False,
-                        last_state="baseline",
+                        last_state=STATE_BASELINE,
                         last_sample=data,
                     )
-            elif self._is_active(data):
+            elif self._is_wake_state(data):
                 consecutive_baseline = 0
                 if seen_baseline:
-                    seen_active_after_baseline = True
+                    seen_nonbaseline_after_baseline = True
             else:
                 consecutive_baseline = 0
 
@@ -735,26 +843,23 @@ class TriggerAnalysis:
                 sample_count=len(samples),
                 completed_active_cycle=completed_cycle,
                 unfinished_active_cycle=False,
-                last_state="baseline",
+                last_state=STATE_BASELINE,
                 last_sample=last,
             )
 
-        if last is not None and self._is_active(last):
+        if last is not None and self._is_wake_state(last):
             return SettleOutcome(
                 ready=False,
                 method=BASELINE_OBSERVED if seen_baseline else None,
                 sample_count=len(samples),
                 completed_active_cycle=completed_cycle,
                 unfinished_active_cycle=True,
-                last_state="active",
+                last_state=self._classify(last),
                 last_sample=last,
                 error=error,
             )
 
-        # Never returned to baseline, but we did see a first-sample baseline
-        # earlier — still not ready if last state isn't baseline.
-        if seen_baseline and first_baseline is not None and not seen_active_after_baseline:
-            # Odd case: saw baseline then drifted to other; not ready.
+        if seen_baseline and first_baseline is not None:
             pass
 
         return SettleOutcome(
@@ -762,7 +867,7 @@ class TriggerAnalysis:
             method=BASELINE_OBSERVED if seen_baseline else None,
             sample_count=len(samples),
             completed_active_cycle=completed_cycle,
-            unfinished_active_cycle=bool(seen_active_after_baseline),
+            unfinished_active_cycle=bool(seen_nonbaseline_after_baseline),
             last_state=self._classify(last) if last is not None else None,
             last_sample=last,
             error=error,
@@ -770,31 +875,46 @@ class TriggerAnalysis:
 
     def _aggregate(self, scenario: str, reps: list[dict[str, Any]]) -> dict[str, Any]:
         executed = [item for item in reps if item.get("trigger_executed")]
-        clean = [
-            item
-            for item in executed
-            if not item.get("contaminated")
-        ]
+        clean = [item for item in executed if not item.get("contaminated")]
         with_transition = [
             item
             for item in clean
-            if item.get("active_observed") and item.get("returned_to_baseline")
+            if item.get("returned_to_baseline")
+            and item.get("cycle_kind") in (CYCLE_CANONICAL, CYCLE_TRANSITIONAL)
+        ]
+        canonical = [
+            item for item in clean if item.get("canonical_active_observed")
+        ]
+        intermediate = [
+            item for item in clean if item.get("intermediate_observed")
         ]
         missing_return = [
             item
             for item in clean
-            if item.get("active_observed") and not item.get("returned_to_baseline")
+            if (
+                item.get("intermediate_observed")
+                or item.get("canonical_active_observed")
+            )
+            and not item.get("returned_to_baseline")
         ]
         skipped = [item for item in reps if not item.get("trigger_executed")]
 
-        if not executed:
+        state_counts = {
+            STATE_BASELINE: 0,
+            STATE_INTERMEDIATE: 0,
+            STATE_ACTIVE: 0,
+            STATE_OTHER: 0,
+        }
+        for item in clean:
+            for sample in item.get("samples") or []:
+                state = sample.get("state") or STATE_OTHER
+                if state not in state_counts:
+                    state_counts[STATE_OTHER] += 1
+                else:
+                    state_counts[state] += 1
+
+        if not executed or not clean or len(with_transition) == 0:
             conclusion = CONCLUSION_INCONCLUSIVE
-        elif not clean:
-            conclusion = CONCLUSION_INCONCLUSIVE
-        elif len(with_transition) == 0:
-            conclusion = CONCLUSION_INCONCLUSIVE
-        elif len(with_transition) == len(clean) and len(clean) >= 3:
-            conclusion = CONCLUSION_PROBABLE
         elif len(with_transition) >= max(2, (len(clean) + 1) // 2):
             conclusion = CONCLUSION_REPEATABLE
         else:
@@ -807,33 +927,93 @@ class TriggerAnalysis:
             "skipped_not_executed": len(skipped),
             "clean_repetitions": len(clean),
             "transition_repetitions": len(with_transition),
+            "canonical_active_repetitions": len(canonical),
+            "intermediate_repetitions": len(intermediate),
             "missing_return_repetitions": len(missing_return),
             "contaminated_repetitions": sum(
                 1 for item in reps if item.get("contaminated")
             ),
+            "state_counts": state_counts,
             "conclusion": conclusion,
             "repetition_details": reps,
             "uses_sram": False,
             "statistics_note": (
                 "Only repetitions with trigger_executed=true are included "
-                "in trigger association statistics."
+                "in trigger association statistics. "
+                "transition_repetitions count complete non-baseline cycles "
+                "(canonical or transitional). "
+                "'probable trigger' is not assigned from per-scenario "
+                "repeatability alone."
             ),
         }
 
+    def _apply_global_conclusions(
+        self,
+        aggregates: dict[str, Any],
+        metadata: dict[str, Any],
+    ) -> None:
+        if not aggregates:
+            metadata["global_conclusion"] = None
+            return
+
+        select = aggregates.get("select-only")
+        select_transitions = (
+            int(select.get("transition_repetitions", 0)) if select else 0
+        )
+        others = [
+            (name, agg)
+            for name, agg in aggregates.items()
+            if name != "select-only"
+        ]
+        others_with = [
+            name
+            for name, agg in others
+            if int(agg.get("transition_repetitions", 0)) > 0
+        ]
+        majority_others = (
+            len(others) > 0 and len(others_with) >= max(1, (len(others) + 1) // 2)
+        )
+
+        if select_transitions > 0 and majority_others:
+            metadata["global_conclusion"] = GLOBAL_RF_CONCLUSION
+            for name, agg in aggregates.items():
+                if int(agg.get("transition_repetitions", 0)) > 0:
+                    agg["conclusion"] = CONCLUSION_GENERAL_RF
+                    agg["conclusion_note"] = (
+                        "Shared non-baseline cycle pattern with select-only "
+                        "and other RF scenarios; association, not confirmed "
+                        "causality."
+                    )
+        else:
+            metadata["global_conclusion"] = None
+
     def _classify(self, data: bytes) -> str:
         if self._is_baseline(data):
-            return "baseline"
+            return STATE_BASELINE
+        if self._is_intermediate(data):
+            return STATE_INTERMEDIATE
         if self._is_active(data):
-            return "active"
-        return "other"
+            return STATE_ACTIVE
+        return STATE_OTHER
 
     @staticmethod
     def _is_baseline(data: bytes | None) -> bool:
         return bool(data) and data[0] == BASELINE_NC and data[6] == BASELINE_NS
 
     @staticmethod
+    def _is_intermediate(data: bytes | None) -> bool:
+        return (
+            bool(data)
+            and data[0] == INTERMEDIATE_NC
+            and data[6] == INTERMEDIATE_NS
+        )
+
+    @staticmethod
     def _is_active(data: bytes | None) -> bool:
         return bool(data) and data[0] == ACTIVE_NC and data[6] == ACTIVE_NS
+
+    def _is_wake_state(self, data: bytes | None) -> bool:
+        return self._is_intermediate(data) or self._is_active(data)
 
     def _wait_for_tag(self, client: SimpleProtocolClient):
         deadline = time.monotonic() + self.config.wait_tag_s
@@ -906,6 +1086,9 @@ class TriggerAnalysis:
             self._errors.append(event)
 
     def _row_from_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        def _cell(value: Any) -> Any:
+            return "" if value is None else value
+
         return {
             "scenario": result["scenario"],
             "repetition": result["repetition"],
@@ -919,16 +1102,29 @@ class TriggerAnalysis:
             ),
             "baseline_hex": result.get("baseline_hex") or "",
             "rf_operation": result.get("rf_operation") or "",
-            "rf_duration_us": (
-                "" if result.get("rf_duration_us") is None else result["rf_duration_us"]
-            ),
+            "rf_duration_us": _cell(result.get("rf_duration_us")),
             "post_op_hex": result.get("post_op_hex") or "",
-            "first_transition_us": result.get("first_transition_us") or "",
-            "return_us": result.get("return_us") or "",
-            "active_window_us": result.get("active_window_us") or "",
+            "first_nonbaseline_us": _cell(result.get("first_nonbaseline_us")),
+            "first_transition_us": _cell(result.get("first_transition_us")),
+            "intermediate_enter_us": _cell(result.get("intermediate_enter_us")),
+            "active_enter_us": _cell(result.get("active_enter_us")),
+            "return_us": _cell(result.get("return_us")),
+            "intermediate_duration_us": _cell(
+                result.get("intermediate_duration_us")
+            ),
+            "canonical_active_duration_us": _cell(
+                result.get("canonical_active_duration_us")
+            ),
+            "total_nonbaseline_window_us": _cell(
+                result.get("total_nonbaseline_window_us")
+            ),
+            "active_window_us": _cell(result.get("active_window_us")),
             "transition_count": result.get("transition_count") or 0,
+            "intermediate_observed": result.get("intermediate_observed"),
+            "canonical_active_observed": result.get("canonical_active_observed"),
             "active_observed": result.get("active_observed"),
             "returned_to_baseline": result.get("returned_to_baseline"),
+            "cycle_kind": result.get("cycle_kind") or "",
             "verdict": result.get("verdict"),
             "errors": "|".join(result.get("errors") or []),
             "note": result.get("note") or "",
@@ -968,12 +1164,21 @@ class TriggerAnalysis:
                 "rf_operation",
                 "rf_duration_us",
                 "post_op_hex",
+                "first_nonbaseline_us",
                 "first_transition_us",
+                "intermediate_enter_us",
+                "active_enter_us",
                 "return_us",
+                "intermediate_duration_us",
+                "canonical_active_duration_us",
+                "total_nonbaseline_window_us",
                 "active_window_us",
                 "transition_count",
+                "intermediate_observed",
+                "canonical_active_observed",
                 "active_observed",
                 "returned_to_baseline",
+                "cycle_kind",
                 "verdict",
                 "errors",
                 "note",
@@ -1006,8 +1211,10 @@ class TriggerAnalysis:
             "=========================",
             "",
             "Režim: READ-ONLY, bez SRAM",
-            "Baseline: first-sample baseline je platný; vícenásobné session",
-            "čtení pro stabilitu NENÍ povinné (session read sám interferuje).",
+            "Stavy: baseline 0x19/0x01, intermediate 0x7C/0x41, active 0x7C/0x29",
+            "Baseline: first-sample; multi-read není povinný.",
+            "active_window_us = total_nonbaseline_window_us (compat).",
+            "SearchTag rf_duration_us = transport/API duration, ne čistý RF frame.",
             "Závěry jsou asociační, ne confirmed trigger.",
             f"Port: {metadata.get('port')}",
             f"UID: {metadata.get('uid')}",
@@ -1021,8 +1228,16 @@ class TriggerAnalysis:
                 f"(executed {aggregate.get('executed_repetitions')}/"
                 f"{aggregate.get('repetitions')}, "
                 f"transitions {aggregate.get('transition_repetitions')}, "
+                f"canonical {aggregate.get('canonical_active_repetitions')}, "
+                f"intermediate {aggregate.get('intermediate_repetitions')}, "
                 f"skipped {aggregate.get('skipped_not_executed')})"
             )
+            counts = aggregate.get("state_counts") or {}
+            if counts:
+                lines.append(
+                    "      states: "
+                    + ", ".join(f"{key}={value}" for key, value in counts.items())
+                )
             if aggregate.get("skipped_not_executed"):
                 reasons = [
                     item.get("note")
@@ -1032,7 +1247,11 @@ class TriggerAnalysis:
                 for reason in reasons[:3]:
                     if reason:
                         lines.append(f"      skip reason: {reason}")
+        global_conclusion = metadata.get("global_conclusion")
         lines.append("")
+        if global_conclusion:
+            lines.append(f"Global: {global_conclusion}")
+            lines.append("")
         lines.append(metadata.get("isolation_note", ""))
         lines.append("")
         return "\n".join(lines) + "\n"
