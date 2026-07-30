@@ -202,3 +202,39 @@ Výsledek: **25 tests OK**.
 ```bash
 python -m elatec_uid_tool logic-analyzer --port COM6 --duration 5 --interval-ms 50 --session-only --verbose
 ```
+
+---
+
+## 2026-07-31 — Trigger Analysis + Application Block Analysis
+
+### Provedené změny
+
+- Nový CLI `trigger-analysis` se scénáři select-only / get-version /
+  read-page-00 / read-application-block / read-session /
+  get-version-then-session / repeated-session-only.
+- Best-effort settle + reselect; contaminated/inconclusive značení;
+  závěry observed / repeatable / probable (bez confirmed trigger).
+- Výstupy `captures/trigger-analysis/...` (metadata, timeline.jsonl,
+  scenarios.csv, report).
+- Application block analyzer pro EEPROM `0x30`–`0x37` (tag / JSON / BIN),
+  compare více dumpů, checksum kandidáti, confirmed LE NDEF ID match.
+- CLI: `application-block`, `analyze-application-block`,
+  `compare-application-blocks`.
+- Dokumentace `TRIGGER_ANALYSIS.md`, `APPLICATION_BLOCK_ANALYSIS.md`.
+
+### Testy
+
+```text
+python -m unittest discover -s tests -v
+python -m compileall -q src
+```
+
+Výsledek: **38 tests OK**, compileall OK. Ověřen načtený `dump_A.json`
+→ page `0x33 = C9 D0 2C AA` confirmed LE match.
+
+### Doporučený další krok
+
+```bash
+python -m elatec_uid_tool trigger-analysis --port COM6 --all --verbose
+python -m elatec_uid_tool application-block --port COM6
+```

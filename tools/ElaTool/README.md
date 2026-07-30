@@ -24,7 +24,9 @@ pro analýzu štítků **SES-imagotag VUSION 2.6 BWR GU140** s čipem
 - čtení konfiguračních registrů;
 - čtení a časové sledování session registrů;
 - **NFC Logic Analyzer** — výchozí bezpečný session-only režim;
-- experimentální (neověřený) pokus o RF čtení SRAM, vypnutý ve výchozím stavu.
+- experimentální (neověřený) pokus o RF čtení SRAM, vypnutý ve výchozím stavu;
+- **Trigger Analysis** — asociace RF operací s přechody session registrů;
+- **Application Block Analysis** — pasivní rozbor EEPROM `0x30`–`0x37`.
 
 ## Potvrzený testovaný tag
 
@@ -301,11 +303,45 @@ Aktivní stav vznikl přibližně 50 ms po prvním přístupu, trval asi
 že elektronika štítku reaguje na RF aktivitu a dynamicky pracuje se
 session registry nebo SRAM.
 
+## Trigger Analysis
+
+Hledá asociace mezi RF operacemi a přechodem session registrů
+`0x19/0x01 → 0x7C/0x29`. Neprohlašuje confirmed kauzalitu.
+
+```bash
+python -m elatec_uid_tool trigger-analysis --port COM6 --all --verbose
+
+python -m elatec_uid_tool trigger-analysis \
+  --port COM6 --scenario get-version --repetitions 3 --verbose
+```
+
+Výstup: `captures/trigger-analysis/<timestamp>_<UID>/`
+(`metadata.json`, `timeline.jsonl`, `scenarios.csv`, `report.txt`).
+
+Podrobnosti: [docs/TRIGGER_ANALYSIS.md](docs/TRIGGER_ANALYSIS.md).
+
+## Application Block Analysis (`0x30`–`0x37`)
+
+Pasivní read-only rozbor aplikačního EEPROM bloku.
+
+```bash
+python -m elatec_uid_tool application-block --port COM6
+
+python -m elatec_uid_tool analyze-application-block dump.json
+
+python -m elatec_uid_tool compare-application-blocks dump1.json dump2.json
+```
+
+Potvrzený fakt: NDEF `AA2CD0C9` == stránka `0x33` `C9 D0 2C AA`
+(little-endian).
+
+Podrobnosti: [docs/APPLICATION_BLOCK_ANALYSIS.md](docs/APPLICATION_BLOCK_ANALYSIS.md).
+
 ## Plán dalšího vývoje
 
-1. session-only fyzická měření změn `NC_REG`/`NS_REG`;
-2. pozorovat, zda host sám zapne pass-through/mirror (bez zápisu z RF);
-3. offline analýza timeline;
+1. fyzický běh Trigger Analysis na COM6 a vyhodnocení scénářů;
+2. porovnání application block napříč více stavy štítku;
+3. offline analýza logic-analyzer timeline;
 4. sjednotit legacy skripty jako tenké wrappery nad CLI.
 
 ## Bezpečnost

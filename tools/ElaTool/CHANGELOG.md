@@ -16,8 +16,13 @@ a verzování používá [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - CLI flagy `--session-only` a `--enable-experimental-sram`.
 - Finish status: `completed_successfully` / `completed_with_errors` /
   `partial` / `aborted`.
-- Unit testy change detection, serializace, CLI parseru, NAK recovery
-  a scripted transportu.
+- Read-only Trigger Analysis (`trigger-analysis`) pro asociace RF operací
+  s přechody session registrů.
+- Application Block analyzer/compare (`application-block`,
+  `analyze-application-block`, `compare-application-blocks`) pro EEPROM
+  `0x30`–`0x37` včetně confirmed little-endian NDEF ID match.
+- Unit testy change detection, serializace, CLI parseru, NAK recovery,
+  trigger analysis a application block analýzy.
 
 ### Fixed
 
@@ -27,7 +32,8 @@ a verzování používá [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Documentation
 
-- `docs/NFC_LOGIC_ANALYZER.md` a `docs/NFC_LOGIC_ANALYZER_PROGRESS.md`.
+- `docs/NFC_LOGIC_ANALYZER.md`, `docs/NFC_LOGIC_ANALYZER_PROGRESS.md`,
+  `docs/TRIGGER_ANALYSIS.md`, `docs/APPLICATION_BLOCK_ANALYSIS.md`.
 
 ## [0.2.0] - 2026-06-25
 

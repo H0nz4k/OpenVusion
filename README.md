@@ -18,7 +18,8 @@ Aktuálně podporuje:
 - porovnávání dumpů;
 - čtení konfiguračních registrů;
 - monitorování session registrů;
-- read-only NFC Logic Analyzer (výchozí session-only timeline).
+- read-only NFC Logic Analyzer (výchozí session-only timeline);
+- Trigger Analysis a Application Block Analysis (`0x30`–`0x37`).
 
 Podrobnosti jsou v [dokumentaci ElaTool](tools/ElaTool/README.md).
 
