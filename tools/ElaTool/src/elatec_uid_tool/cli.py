@@ -152,6 +152,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--duration", type=float, default=2.0)
     p.add_argument("--interval-ms", type=float, default=50.0)
     p.add_argument("--settle-ms", type=float, default=1500.0)
+    p.add_argument(
+        "--guard-ms",
+        type=float,
+        default=200.0,
+        help="Krátká prodleva po completed_active_cycle před scénářem",
+    )
     p.add_argument("--repetitions", type=int, default=3)
     p.add_argument("--output-dir", default="captures/trigger-analysis")
     p.add_argument("--verbose", action="store_true")

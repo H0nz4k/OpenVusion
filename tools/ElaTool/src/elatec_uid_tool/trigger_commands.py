@@ -22,6 +22,7 @@ def command_trigger_analysis(args) -> int:
         duration_s=args.duration,
         interval_ms=args.interval_ms,
         settle_ms=args.settle_ms,
+        guard_ms=getattr(args, "guard_ms", 200.0),
         repetitions=args.repetitions,
         output_dir=Path(args.output_dir),
         verbose=bool(args.verbose),
@@ -36,9 +37,11 @@ def command_trigger_analysis(args) -> int:
     print(f"Duration:     {config.duration_s:g} s")
     print(f"Interval:     {config.interval_ms:g} ms")
     print(f"Settle:       {config.settle_ms:g} ms")
+    print(f"Guard:        {config.guard_ms:g} ms")
     print(f"Repetitions:  {config.repetitions}")
     print(f"Output:       {config.output_dir}")
     print("Mode:         READ-ONLY (no SRAM)")
+    print("Baseline:     first-sample baseline (multi-read not required)")
     print()
 
     try:

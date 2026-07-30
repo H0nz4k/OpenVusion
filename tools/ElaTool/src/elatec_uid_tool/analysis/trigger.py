@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 import time
@@ -32,10 +32,31 @@ SCENARIO_IDS = (
     "repeated-session-only",
 )
 
+# Scenarios where SearchTag/reselect is preparation, not the measured trigger.
+SCENARIOS_WITH_PREP_RESELECT = (
+    "get-version",
+    "read-page-00",
+    "read-application-block",
+    "read-session",
+    "get-version-then-session",
+    "repeated-session-only",
+)
+
+# Pre-trigger session probe would itself be a session read / interference.
+SCENARIOS_SKIP_PRE_TRIGGER_PROBE = (
+    "select-only",
+    "read-session",
+    "repeated-session-only",
+)
+
 CONCLUSION_OBSERVED = "observed association"
 CONCLUSION_REPEATABLE = "repeatable association"
 CONCLUSION_PROBABLE = "probable trigger"
 CONCLUSION_INCONCLUSIVE = "inconclusive"
+
+BASELINE_OBSERVED = "baseline_observed"
+BASELINE_CONFIRMED_AFTER_RETURN = "baseline_confirmed_after_return"
+BASELINE_STABLE_MULTI = "baseline_stable_by_multiple_reads"
 
 
 @dataclass
@@ -45,6 +66,7 @@ class TriggerConfig:
     duration_s: float = 2.0
     interval_ms: float = 50.0
     settle_ms: float = 1500.0
+    guard_ms: float = 200.0
     repetitions: int = 3
     output_dir: Path = field(
         default_factory=lambda: Path("captures") / "trigger-analysis"
@@ -59,6 +81,18 @@ class TriggerResult:
     directory: Path
     uid: str | None
     metadata: dict[str, Any]
+
+
+@dataclass
+class SettleOutcome:
+    ready: bool
+    method: str | None
+    sample_count: int
+    completed_active_cycle: bool
+    unfinished_active_cycle: bool
+    last_state: str | None
+    last_sample: bytes | None
+    error: str | None = None
 
 
 class TriggerAnalysis:
@@ -103,7 +137,7 @@ class TriggerAnalysis:
         )
         self._t0_ns = self._clock_ns()
         metadata: dict[str, Any] = {
-            "schema": 1,
+            "schema": 2,
             "tool": "trigger-analysis",
             "read_only": True,
             "uses_sram": False,
@@ -112,13 +146,20 @@ class TriggerAnalysis:
             "duration_s": config.duration_s,
             "interval_ms": config.interval_ms,
             "settle_ms": config.settle_ms,
+            "guard_ms": config.guard_ms,
             "repetitions": config.repetitions,
             "scenarios": list(config.scenarios),
             "baseline": {"NC_REG": BASELINE_NC, "NS_REG": BASELINE_NS},
             "active": {"NC_REG": ACTIVE_NC, "NS_REG": ACTIVE_NS},
+            "baseline_policy": (
+                "first-sample baseline is valid; multiple consecutive baseline "
+                "reads are optional because session reads themselves may trigger "
+                "the active window"
+            ),
             "isolation_note": (
                 "Best-effort settle/reselect only. Not an isolated RF field; "
-                "do not treat results as confirmed causality."
+                "do not treat results as confirmed causality. "
+                "Session reads used for settle/probe may themselves interfere."
             ),
         }
 
@@ -173,15 +214,14 @@ class TriggerAnalysis:
         return TriggerResult(directory=directory, uid=self._uid, metadata=metadata)
 
     def _run_scenario(self, ntag: NtagI2CPlus, scenario: str) -> dict[str, Any]:
-        config = self.config
         reps: list[dict[str, Any]] = []
-        for repetition in range(1, config.repetitions + 1):
+        for repetition in range(1, self.config.repetitions + 1):
             reps.append(self._run_repetition(ntag, scenario, repetition))
         aggregate = self._aggregate(scenario, reps)
         if self.config.verbose:
             print(
                 f"[aggregate] {scenario}: {aggregate['conclusion']} "
-                f"(clean={aggregate['clean_repetitions']}/"
+                f"(executed={aggregate['executed_repetitions']}/"
                 f"{aggregate['repetitions']}, "
                 f"transitions={aggregate['transition_repetitions']})"
             )
@@ -199,19 +239,20 @@ class TriggerAnalysis:
             decoded={"scenario": scenario, "repetition": repetition},
         )
 
-        settled, settle_samples = self._settle_to_baseline(ntag)
-        reselected = self._reselect(ntag.client)
-        baseline, baseline_stable, contaminated = self._read_baseline(ntag)
-
         result: dict[str, Any] = {
             "scenario": scenario,
             "repetition": repetition,
-            "settled": settled,
-            "reselected": reselected,
-            "baseline_hex": baseline.hex(" ").upper() if baseline else None,
-            "baseline_stable": baseline_stable,
-            "contaminated": contaminated or not settled or not baseline_stable,
-            "rf_operation": scenario,
+            "settled": False,
+            "reselected": False,
+            "baseline_hex": None,
+            "baseline_method": None,
+            "baseline_sample_count": 0,
+            "baseline_stable_by_multiple_reads": False,
+            "pre_trigger_state": None,
+            "measurement_interference_possible": False,
+            "trigger_executed": False,
+            "contaminated": False,
+            "rf_operation": None,
             "rf_duration_us": None,
             "post_op_hex": None,
             "first_transition_us": None,
@@ -223,59 +264,205 @@ class TriggerAnalysis:
             "errors": [],
             "verdict": CONCLUSION_INCONCLUSIVE,
             "samples": [],
+            "note": None,
         }
 
-        if result["contaminated"]:
-            result["verdict"] = CONCLUSION_INCONCLUSIVE
-            result["note"] = "Baseline not stable before RF action."
-            self._rows.append(self._row_from_result(result))
+        settle = self._settle_to_baseline(ntag)
+        result["settled"] = settle.ready
+        result["baseline_sample_count"] = settle.sample_count
+        result["baseline_method"] = settle.method
+        if settle.last_sample is not None:
+            result["baseline_hex"] = settle.last_sample.hex(" ").upper()
+
+        if settle.error:
+            result["errors"].append(settle.error)
+            result["contaminated"] = True
+            result["note"] = f"RF error during settle: {settle.error}"
+            result["trigger_executed"] = False
+            return self._finish_repetition(result, scenario, repetition)
+
+        if settle.unfinished_active_cycle:
+            result["contaminated"] = True
+            result["pre_trigger_state"] = "active"
+            result["note"] = "Unfinished active cycle at end of settle."
+            result["trigger_executed"] = False
+            return self._finish_repetition(result, scenario, repetition)
+
+        if not settle.ready or settle.last_sample is None or not self._is_baseline(
+            settle.last_sample
+        ):
+            result["contaminated"] = True
+            result["pre_trigger_state"] = settle.last_state or "unknown"
+            result["note"] = "Baseline not available after settle."
+            result["trigger_executed"] = False
+            return self._finish_repetition(result, scenario, repetition)
+
+        baseline_snapshot = settle.last_sample
+        result["baseline_hex"] = baseline_snapshot.hex(" ").upper()
+
+        # Preparatory reselect — not used for select-only (SearchTag is the trigger).
+        if scenario in SCENARIOS_WITH_PREP_RESELECT:
+            result["reselected"] = self._reselect(ntag.client)
+            if not result["reselected"]:
+                result["contaminated"] = True
+                result["note"] = "Preparatory SearchTag/reselect failed."
+                result["trigger_executed"] = False
+                return self._finish_repetition(result, scenario, repetition)
+
+        # At most one pre-trigger session probe (skipped for session/select triggers).
+        if scenario not in SCENARIOS_SKIP_PRE_TRIGGER_PROBE:
+            try:
+                probe, probe_us = self._timed(ntag.read_session_registers)
+            except (ElatecError, SerialCommunicationError) as exc:
+                result["errors"].append(str(exc))
+                result["contaminated"] = True
+                result["note"] = f"RF error before trigger: {exc}"
+                result["trigger_executed"] = False
+                self._emit("rf_error", error=str(exc), rf_operation="FAST_READ 3A EC ED")
+                self._recover(ntag.client)
+                return self._finish_repetition(result, scenario, repetition)
+
+            result["measurement_interference_possible"] = True
+            result["pre_trigger_state"] = self._classify(probe)
+            result["baseline_sample_count"] += 1
             self._emit(
-                "scenario_finished",
+                "baseline_sample",
+                rf_operation="FAST_READ 3A EC ED",
+                rf_duration_us=probe_us,
+                raw_hex=probe.hex(" ").upper(),
                 decoded={
-                    "scenario": scenario,
-                    "repetition": repetition,
-                    "verdict": result["verdict"],
-                    "contaminated": True,
+                    "phase": "pre_trigger_probe",
+                    "state": result["pre_trigger_state"],
+                    "measurement_interference_possible": True,
+                    "baseline_method": result["baseline_method"],
                 },
             )
-            return result
+            if self._is_active(probe):
+                result["contaminated"] = True
+                result["note"] = "Pre-trigger state is active (0x7C/0x29)."
+                result["trigger_executed"] = False
+                return self._finish_repetition(result, scenario, repetition)
+            if not self._is_baseline(probe):
+                result["contaminated"] = True
+                result["note"] = f"Pre-trigger state unknown: {result['pre_trigger_state']}."
+                result["trigger_executed"] = False
+                return self._finish_repetition(result, scenario, repetition)
+            baseline_snapshot = probe
+            result["baseline_hex"] = probe.hex(" ").upper()
+        else:
+            result["pre_trigger_state"] = "baseline"
+            # Settle session reads already imply possible interference for
+            # session-based scenarios; select-only settle also used session reads.
+            result["measurement_interference_possible"] = True
 
+        # --- Execute trigger ---
+        trigger_t0_elapsed: int | None = None
         try:
-            op_data, op_us = self._execute_scenario_action(ntag, scenario)
-            result["rf_duration_us"] = op_us
-            self._emit(
-                "scenario_action",
-                rf_operation=scenario,
-                rf_duration_us=op_us,
-                raw_hex=op_data.hex(" ").upper() if isinstance(op_data, (bytes, bytearray)) else None,
-                decoded={"scenario": scenario, "repetition": repetition},
-            )
-        except (ElatecError, SerialCommunicationError, ValueError) as exc:
+            if scenario == "repeated-session-only":
+                op_data, op_us = self._timed(ntag.read_session_registers)
+                rf_name = "FAST_READ 3A EC ED"
+                trigger_t0_elapsed = self._elapsed_us()
+                result["rf_operation"] = rf_name
+                result["rf_duration_us"] = op_us
+                result["post_op_hex"] = op_data.hex(" ").upper()
+                result["trigger_executed"] = True
+                self._emit(
+                    "scenario_action",
+                    rf_operation=rf_name,
+                    rf_duration_us=op_us,
+                    raw_hex=result["post_op_hex"],
+                    decoded={
+                        "scenario": scenario,
+                        "repetition": repetition,
+                        "role": "first_session_read_is_trigger_t0",
+                    },
+                )
+                post = op_data
+            elif scenario == "select-only":
+                started = self._clock_ns()
+                tag = ntag.client.search_tag()
+                finished = self._clock_ns()
+                op_us = (finished - started) // 1000
+                if tag is None:
+                    raise SerialCommunicationError(
+                        "select-only: SearchTag nenašel tag."
+                    )
+                trigger_t0_elapsed = self._elapsed_us()
+                result["rf_operation"] = "SearchTag"
+                result["rf_duration_us"] = op_us
+                result["trigger_executed"] = True
+                self._emit(
+                    "scenario_action",
+                    rf_operation="SearchTag",
+                    rf_duration_us=op_us,
+                    raw_hex=tag.id_bytes.hex(" ").upper(),
+                    decoded={
+                        "scenario": scenario,
+                        "repetition": repetition,
+                        "uid": tag.id_hex,
+                    },
+                )
+                post, post_us = self._timed(ntag.read_session_registers)
+                result["post_op_hex"] = post.hex(" ").upper()
+                self._emit(
+                    "session_sample",
+                    rf_operation="FAST_READ 3A EC ED",
+                    rf_duration_us=post_us,
+                    raw_hex=result["post_op_hex"],
+                    decoded={"phase": "post_action", "scenario": scenario},
+                )
+            else:
+                op_data, op_us, rf_name = self._execute_scenario_action(ntag, scenario)
+                trigger_t0_elapsed = self._elapsed_us()
+                result["rf_operation"] = rf_name
+                result["rf_duration_us"] = op_us
+                result["trigger_executed"] = True
+                raw_hex = (
+                    op_data.hex(" ").upper()
+                    if isinstance(op_data, (bytes, bytearray))
+                    else None
+                )
+                self._emit(
+                    "scenario_action",
+                    rf_operation=rf_name,
+                    rf_duration_us=op_us,
+                    raw_hex=raw_hex,
+                    decoded={"scenario": scenario, "repetition": repetition},
+                )
+                # For read-session the action already returned session bytes.
+                if scenario == "read-session":
+                    post = op_data
+                    result["post_op_hex"] = post.hex(" ").upper()
+                else:
+                    post, post_us = self._timed(ntag.read_session_registers)
+                    result["post_op_hex"] = post.hex(" ").upper()
+                    self._emit(
+                        "session_sample",
+                        rf_operation="FAST_READ 3A EC ED",
+                        rf_duration_us=post_us,
+                        raw_hex=result["post_op_hex"],
+                        decoded={"phase": "post_action", "scenario": scenario},
+                    )
+        except (ElatecError, SerialCommunicationError, ValueError, RuntimeError) as exc:
             result["errors"].append(str(exc))
+            result["contaminated"] = True
+            result["note"] = f"RF error during/before trigger: {exc}"
+            result["trigger_executed"] = False
             self._emit("rf_error", error=str(exc), rf_operation=scenario)
             self._recover(ntag.client)
-            result["verdict"] = CONCLUSION_INCONCLUSIVE
-            self._rows.append(self._row_from_result(result))
-            return result
-
-        post, post_us = self._timed(ntag.read_session_registers)
-        result["post_op_hex"] = post.hex(" ").upper()
-        action_elapsed = self._elapsed_us()
-        self._emit(
-            "session_sample",
-            rf_operation="FAST_READ 3A EC ED",
-            rf_duration_us=post_us,
-            raw_hex=result["post_op_hex"],
-            decoded={"phase": "post_action", "scenario": scenario},
-        )
+            return self._finish_repetition(result, scenario, repetition)
 
         samples = [
             {
-                "elapsed_us": action_elapsed,
+                "elapsed_us": trigger_t0_elapsed if trigger_t0_elapsed is not None else self._elapsed_us(),
                 "raw_hex": result["post_op_hex"],
                 "nc": post[0],
                 "ns": post[6],
                 "state": self._classify(post),
+                "role": "trigger_t0" if scenario in (
+                    "repeated-session-only",
+                    "read-session",
+                ) else "post_action",
             }
         ]
 
@@ -283,9 +470,9 @@ class TriggerAnalysis:
         transitions = 0
         first_transition_us = None
         return_us = None
-        if self._is_active(post) and self._is_baseline(baseline):
+        if self._is_active(post) and self._is_baseline(baseline_snapshot):
             transitions = 1
-            first_transition_us = action_elapsed
+            first_transition_us = samples[0]["elapsed_us"]
             result["active_observed"] = True
 
         deadline = self._clock_ns() + int(config.duration_s * 1_000_000_000)
@@ -300,7 +487,11 @@ class TriggerAnalysis:
                 current, rf_us = self._timed(ntag.read_session_registers)
             except (ElatecError, SerialCommunicationError) as exc:
                 result["errors"].append(str(exc))
-                self._emit("rf_error", error=str(exc), rf_operation="FAST_READ 3A EC ED")
+                self._emit(
+                    "rf_error",
+                    error=str(exc),
+                    rf_operation="FAST_READ 3A EC ED",
+                )
                 self._recover(ntag.client)
                 next_sample = self._clock_ns() + interval_ns
                 continue
@@ -314,6 +505,7 @@ class TriggerAnalysis:
                     "nc": current[0],
                     "ns": current[6],
                     "state": state,
+                    "role": "observation",
                 }
             )
             self._emit(
@@ -321,7 +513,11 @@ class TriggerAnalysis:
                 rf_operation="FAST_READ 3A EC ED",
                 rf_duration_us=rf_us,
                 raw_hex=current.hex(" ").upper(),
-                decoded={"phase": "monitor", "scenario": scenario, "state": state},
+                decoded={
+                    "phase": "monitor",
+                    "scenario": scenario,
+                    "state": state,
+                },
             )
 
             if previous != current:
@@ -330,6 +526,14 @@ class TriggerAnalysis:
                     first_transition_us is None
                     and self._is_baseline(previous)
                     and self._is_active(current)
+                ):
+                    first_transition_us = elapsed
+                    result["active_observed"] = True
+                if (
+                    first_transition_us is None
+                    and self._is_baseline(baseline_snapshot)
+                    and self._is_active(current)
+                    and previous == baseline_snapshot
                 ):
                     first_transition_us = elapsed
                     result["active_observed"] = True
@@ -352,12 +556,11 @@ class TriggerAnalysis:
         result["return_us"] = return_us
         if first_transition_us is not None and return_us is not None:
             result["active_window_us"] = return_us - first_transition_us
-        elif result["active_observed"] and return_us is None:
-            result["note"] = "Active state observed but no return within duration."
-            result["verdict"] = CONCLUSION_INCONCLUSIVE
+
         if result["active_observed"] and result["returned_to_baseline"]:
             result["verdict"] = CONCLUSION_OBSERVED
-        elif result["active_observed"]:
+        elif result["active_observed"] and return_us is None:
+            result["note"] = "Active state observed but no return within duration."
             result["verdict"] = CONCLUSION_INCONCLUSIVE
         else:
             result["verdict"] = CONCLUSION_INCONCLUSIVE
@@ -366,12 +569,25 @@ class TriggerAnalysis:
         if self.config.verbose:
             print(
                 f"[{scenario} #{repetition}] "
+                f"executed={result['trigger_executed']} "
+                f"method={result['baseline_method']} "
                 f"active={result['active_observed']} "
                 f"return={result['returned_to_baseline']} "
-                f"transitions={transitions} "
                 f"verdict={result['verdict']}"
             )
 
+        return self._finish_repetition(result, scenario, repetition)
+
+    def _finish_repetition(
+        self,
+        result: dict[str, Any],
+        scenario: str,
+        repetition: int,
+    ) -> dict[str, Any]:
+        if not result.get("trigger_executed"):
+            result["verdict"] = CONCLUSION_INCONCLUSIVE
+            if not result.get("note"):
+                result["note"] = "Trigger was not executed."
         self._rows.append(self._row_from_result(result))
         self._emit(
             "scenario_finished",
@@ -379,8 +595,10 @@ class TriggerAnalysis:
                 "scenario": scenario,
                 "repetition": repetition,
                 "verdict": result["verdict"],
-                "active_observed": result["active_observed"],
-                "contaminated": result["contaminated"],
+                "trigger_executed": result.get("trigger_executed"),
+                "contaminated": result.get("contaminated"),
+                "baseline_method": result.get("baseline_method"),
+                "note": result.get("note"),
             },
         )
         return result
@@ -389,103 +607,174 @@ class TriggerAnalysis:
         self,
         ntag: NtagI2CPlus,
         scenario: str,
-    ) -> tuple[Any, int]:
-        # Guard: never touch SRAM helpers.
-        if hasattr(ntag, "read_sram") and scenario == "read-sram":
+    ) -> tuple[Any, int, str]:
+        if scenario == "read-sram":
             self._forbidden_sram_ops += 1
             raise RuntimeError("SRAM is forbidden in trigger analysis.")
 
-        if scenario == "select-only":
-            started = self._clock_ns()
-            tag = ntag.client.search_tag()
-            finished = self._clock_ns()
-            if tag is None:
-                raise SerialCommunicationError("select-only: SearchTag nenašel tag.")
-            return tag.id_bytes, (finished - started) // 1000
-
         if scenario == "get-version":
-            return self._timed(ntag.get_version)
+            data, us = self._timed(ntag.get_version)
+            return data, us, "GET_VERSION 60"
 
         if scenario == "read-page-00":
-            return self._timed(lambda: ntag.read_block(0x00))
+            data, us = self._timed(lambda: ntag.read_block(0x00))
+            return data, us, "READ 30 00"
 
         if scenario == "read-application-block":
-            return self._timed(
+            data, us = self._timed(
                 lambda: ntag.read_eeprom_range(
                     EEPROM_WATCH_START_PAGE,
                     EEPROM_WATCH_END_PAGE,
                 )
             )
+            return data, us, "FAST_READ 3A 30 37"
 
         if scenario == "read-session":
-            return self._timed(ntag.read_session_registers)
+            data, us = self._timed(ntag.read_session_registers)
+            return data, us, "FAST_READ 3A EC ED"
 
         if scenario == "get-version-then-session":
             started = self._clock_ns()
             version = ntag.get_version()
             session = ntag.read_session_registers()
             finished = self._clock_ns()
-            return version.raw + session, (finished - started) // 1000
+            return (
+                version.raw + session,
+                (finished - started) // 1000,
+                "GET_VERSION+FAST_READ_SESSION",
+            )
 
-        if scenario == "repeated-session-only":
-            # Action phase intentionally empty; monitoring loop performs repeats.
-            return b"", 0
+        raise ValueError(f"Neznámý scénář pro action helper: {scenario}")
 
-        raise ValueError(f"Neznámý scénář: {scenario}")
+    def _settle_to_baseline(self, ntag: NtagI2CPlus) -> SettleOutcome:
+        """Settle without requiring consecutive baseline reads.
 
-    def _settle_to_baseline(self, ntag: NtagI2CPlus) -> tuple[bool, list[bytes]]:
+        A single baseline sample is valid (first-sample baseline). If the settle
+        window observes baseline→active→baseline, that completed cycle is the
+        preferred confirmation, followed by a short guard delay.
+        """
         deadline = self._clock_ns() + int(self.config.settle_ms * 1_000_000)
         samples: list[bytes] = []
+        seen_baseline = False
+        seen_active_after_baseline = False
+        completed_cycle = False
+        first_baseline: bytes | None = None
+        consecutive_baseline = 0
+        max_consecutive_baseline = 0
+        last: bytes | None = None
+        error: str | None = None
+
         while self._clock_ns() < deadline:
             try:
-                data, _rf = self._timed(ntag.read_session_registers)
-            except (ElatecError, SerialCommunicationError):
+                data, rf_us = self._timed(ntag.read_session_registers)
+            except (ElatecError, SerialCommunicationError) as exc:
+                error = str(exc)
+                self._emit(
+                    "rf_error",
+                    error=error,
+                    rf_operation="FAST_READ 3A EC ED",
+                )
                 self._recover(ntag.client)
                 self._sleep(self.config.interval_ms / 1000.0)
                 continue
+
             samples.append(data)
+            last = data
+            state = self._classify(data)
             self._emit(
                 "session_sample",
                 rf_operation="FAST_READ 3A EC ED",
+                rf_duration_us=rf_us,
                 raw_hex=data.hex(" ").upper(),
-                decoded={"phase": "settle", "state": self._classify(data)},
+                decoded={"phase": "settle", "state": state},
             )
-            if self._is_baseline(data):
-                # Require a second confirming sample.
-                self._sleep(self.config.interval_ms / 1000.0)
-                try:
-                    confirm, _ = self._timed(ntag.read_session_registers)
-                except (ElatecError, SerialCommunicationError):
-                    continue
-                samples.append(confirm)
-                if self._is_baseline(confirm):
-                    return True, samples
-            self._sleep(self.config.interval_ms / 1000.0)
-        return False, samples
 
-    def _read_baseline(self, ntag: NtagI2CPlus) -> tuple[bytes | None, bool, bool]:
-        try:
-            first, _ = self._timed(ntag.read_session_registers)
+            if self._is_baseline(data):
+                consecutive_baseline += 1
+                max_consecutive_baseline = max(
+                    max_consecutive_baseline, consecutive_baseline
+                )
+                if not seen_baseline:
+                    seen_baseline = True
+                    first_baseline = data
+                if seen_active_after_baseline:
+                    completed_cycle = True
+                    if self.config.guard_ms > 0:
+                        self._sleep(self.config.guard_ms / 1000.0)
+                    method = BASELINE_CONFIRMED_AFTER_RETURN
+                    if max_consecutive_baseline >= 2:
+                        # Optional annotation only; method stays after-return.
+                        pass
+                    return SettleOutcome(
+                        ready=True,
+                        method=method,
+                        sample_count=len(samples),
+                        completed_active_cycle=True,
+                        unfinished_active_cycle=False,
+                        last_state="baseline",
+                        last_sample=data,
+                    )
+            elif self._is_active(data):
+                consecutive_baseline = 0
+                if seen_baseline:
+                    seen_active_after_baseline = True
+            else:
+                consecutive_baseline = 0
+
             self._sleep(self.config.interval_ms / 1000.0)
-            second, _ = self._timed(ntag.read_session_registers)
-        except (ElatecError, SerialCommunicationError) as exc:
-            self._emit("rf_error", error=str(exc), rf_operation="FAST_READ 3A EC ED")
-            return None, False, True
-        stable = first == second
-        contaminated = not (stable and self._is_baseline(first))
-        self._emit(
-            "baseline_sample",
-            raw_hex=first.hex(" ").upper(),
-            decoded={
-                "stable": stable,
-                "contaminated": contaminated,
-                "state": self._classify(first),
-            },
+
+        if last is not None and self._is_baseline(last):
+            method = BASELINE_OBSERVED
+            if completed_cycle:
+                method = BASELINE_CONFIRMED_AFTER_RETURN
+            elif max_consecutive_baseline >= 2:
+                method = BASELINE_STABLE_MULTI
+            return SettleOutcome(
+                ready=True,
+                method=method,
+                sample_count=len(samples),
+                completed_active_cycle=completed_cycle,
+                unfinished_active_cycle=False,
+                last_state="baseline",
+                last_sample=last,
+            )
+
+        if last is not None and self._is_active(last):
+            return SettleOutcome(
+                ready=False,
+                method=BASELINE_OBSERVED if seen_baseline else None,
+                sample_count=len(samples),
+                completed_active_cycle=completed_cycle,
+                unfinished_active_cycle=True,
+                last_state="active",
+                last_sample=last,
+                error=error,
+            )
+
+        # Never returned to baseline, but we did see a first-sample baseline
+        # earlier — still not ready if last state isn't baseline.
+        if seen_baseline and first_baseline is not None and not seen_active_after_baseline:
+            # Odd case: saw baseline then drifted to other; not ready.
+            pass
+
+        return SettleOutcome(
+            ready=False,
+            method=BASELINE_OBSERVED if seen_baseline else None,
+            sample_count=len(samples),
+            completed_active_cycle=completed_cycle,
+            unfinished_active_cycle=bool(seen_active_after_baseline),
+            last_state=self._classify(last) if last is not None else None,
+            last_sample=last,
+            error=error,
         )
-        return first, stable, contaminated
 
     def _aggregate(self, scenario: str, reps: list[dict[str, Any]]) -> dict[str, Any]:
-        clean = [item for item in reps if not item.get("contaminated")]
+        executed = [item for item in reps if item.get("trigger_executed")]
+        clean = [
+            item
+            for item in executed
+            if not item.get("contaminated")
+        ]
         with_transition = [
             item
             for item in clean
@@ -496,8 +785,11 @@ class TriggerAnalysis:
             for item in clean
             if item.get("active_observed") and not item.get("returned_to_baseline")
         ]
+        skipped = [item for item in reps if not item.get("trigger_executed")]
 
-        if not clean:
+        if not executed:
+            conclusion = CONCLUSION_INCONCLUSIVE
+        elif not clean:
             conclusion = CONCLUSION_INCONCLUSIVE
         elif len(with_transition) == 0:
             conclusion = CONCLUSION_INCONCLUSIVE
@@ -511,13 +803,21 @@ class TriggerAnalysis:
         return {
             "scenario": scenario,
             "repetitions": len(reps),
+            "executed_repetitions": len(executed),
+            "skipped_not_executed": len(skipped),
             "clean_repetitions": len(clean),
             "transition_repetitions": len(with_transition),
             "missing_return_repetitions": len(missing_return),
-            "contaminated_repetitions": sum(1 for item in reps if item.get("contaminated")),
+            "contaminated_repetitions": sum(
+                1 for item in reps if item.get("contaminated")
+            ),
             "conclusion": conclusion,
             "repetition_details": reps,
             "uses_sram": False,
+            "statistics_note": (
+                "Only repetitions with trigger_executed=true are included "
+                "in trigger association statistics."
+            ),
         }
 
     def _classify(self, data: bytes) -> str:
@@ -556,7 +856,7 @@ class TriggerAnalysis:
         self._emit(
             "tag_reselected",
             rf_operation="SearchTag",
-            decoded={"uid": tag.id_hex},
+            decoded={"uid": tag.id_hex, "role": "preparatory"},
         )
         return True
 
@@ -566,7 +866,6 @@ class TriggerAnalysis:
     def _timed(self, func: Callable[[], Any]) -> tuple[Any, int]:
         started = self._clock_ns()
         result = func()
-        # Unwrap NtagVersion
         if hasattr(result, "raw") and isinstance(result.raw, (bytes, bytearray)):
             payload = result.raw
         else:
@@ -610,10 +909,19 @@ class TriggerAnalysis:
         return {
             "scenario": result["scenario"],
             "repetition": result["repetition"],
-            "contaminated": result["contaminated"],
+            "trigger_executed": result.get("trigger_executed"),
+            "contaminated": result.get("contaminated"),
+            "baseline_method": result.get("baseline_method") or "",
+            "baseline_sample_count": result.get("baseline_sample_count") or 0,
+            "pre_trigger_state": result.get("pre_trigger_state") or "",
+            "measurement_interference_possible": result.get(
+                "measurement_interference_possible"
+            ),
             "baseline_hex": result.get("baseline_hex") or "",
             "rf_operation": result.get("rf_operation") or "",
-            "rf_duration_us": result.get("rf_duration_us") or "",
+            "rf_duration_us": (
+                "" if result.get("rf_duration_us") is None else result["rf_duration_us"]
+            ),
             "post_op_hex": result.get("post_op_hex") or "",
             "first_transition_us": result.get("first_transition_us") or "",
             "return_us": result.get("return_us") or "",
@@ -636,16 +944,26 @@ class TriggerAnalysis:
             json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
-        with (directory / "timeline.jsonl").open("w", encoding="utf-8", newline="\n") as handle:
+        with (directory / "timeline.jsonl").open(
+            "w", encoding="utf-8", newline="\n"
+        ) as handle:
             for event in self._timeline:
-                handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
+                handle.write(
+                    json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+                    + "\n"
+                )
         with (directory / "scenarios.csv").open(
             "w", encoding="utf-8-sig", newline=""
         ) as handle:
             fieldnames = [
                 "scenario",
                 "repetition",
+                "trigger_executed",
                 "contaminated",
+                "baseline_method",
+                "baseline_sample_count",
+                "pre_trigger_state",
+                "measurement_interference_possible",
                 "baseline_hex",
                 "rf_operation",
                 "rf_duration_us",
@@ -688,6 +1006,8 @@ class TriggerAnalysis:
             "=========================",
             "",
             "Režim: READ-ONLY, bez SRAM",
+            "Baseline: first-sample baseline je platný; vícenásobné session",
+            "čtení pro stabilitu NENÍ povinné (session read sám interferuje).",
             "Závěry jsou asociační, ne confirmed trigger.",
             f"Port: {metadata.get('port')}",
             f"UID: {metadata.get('uid')}",
@@ -698,10 +1018,20 @@ class TriggerAnalysis:
         for scenario, aggregate in aggregates.items():
             lines.append(
                 f"  - {scenario}: {aggregate.get('conclusion')} "
-                f"(clean {aggregate.get('clean_repetitions')}/"
+                f"(executed {aggregate.get('executed_repetitions')}/"
                 f"{aggregate.get('repetitions')}, "
-                f"transitions {aggregate.get('transition_repetitions')})"
+                f"transitions {aggregate.get('transition_repetitions')}, "
+                f"skipped {aggregate.get('skipped_not_executed')})"
             )
+            if aggregate.get("skipped_not_executed"):
+                reasons = [
+                    item.get("note")
+                    for item in aggregate.get("repetition_details", [])
+                    if not item.get("trigger_executed")
+                ]
+                for reason in reasons[:3]:
+                    if reason:
+                        lines.append(f"      skip reason: {reason}")
         lines.append("")
         lines.append(metadata.get("isolation_note", ""))
         lines.append("")
