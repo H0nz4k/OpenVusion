@@ -18,7 +18,7 @@ Aktuálně podporuje:
 - porovnávání dumpů;
 - čtení konfiguračních registrů;
 - monitorování session registrů;
-- přípravu NFC Logic Analyzeru pro sledování SRAM.
+- read-only NFC Logic Analyzer (session + SRAM timeline).
 
 Podrobnosti jsou v [dokumentaci ElaTool](tools/ElaTool/README.md).
 

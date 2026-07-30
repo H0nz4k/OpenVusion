@@ -6,6 +6,20 @@ a verzování používá [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+
+- Read-only NFC Logic Analyzer (`python -m elatec_uid_tool logic-analyzer`)
+  se společnou časovou osou session registrů a 64B SRAM.
+- `NtagI2CPlus.fast_read`, `read_session_registers` a `read_sram`
+  (RF stránky `0xF0`–`0xFF` dle NXP datasheetu, pass-through mapování).
+- Export capture do `metadata.json`, `timeline.jsonl`, `samples.csv` a `report.txt`.
+- Volitelné sledování EEPROM `0x30`–`0x37` přes `--watch-eeprom`.
+- Unit testy change detection, serializace, CLI parseru a scripted transportu.
+
+### Documentation
+
+- `docs/NFC_LOGIC_ANALYZER.md` a `docs/NFC_LOGIC_ANALYZER_PROGRESS.md`.
+
 ## [0.2.0] - 2026-06-25
 
 ### Added

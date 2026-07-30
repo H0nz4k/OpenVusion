@@ -23,7 +23,8 @@ pro analýzu štítků **SES-imagotag VUSION 2.6 BWR GU140** s čipem
 - porovnání dvou NTAG dumpů;
 - čtení konfiguračních registrů;
 - čtení a časové sledování session registrů;
-- příprava na sledování SRAM a společný NFC Logic Analyzer.
+- read-only čtení 64B SRAM (RF mapování pass-through `0xF0`–`0xFF`);
+- **NFC Logic Analyzer** — společná časová osa session + SRAM (+ volitelně EEPROM).
 
 ## Potvrzený testovaný tag
 
@@ -56,11 +57,15 @@ ElaTool/
 │       ├── ntag.py
 │       ├── analyzer.py
 │       ├── cli.py
+│       ├── capture/          # NFC Logic Analyzer
 │       └── ...
 ├── tests/
 ├── docs/
+│   ├── NFC_LOGIC_ANALYZER.md
+│   └── NFC_LOGIC_ANALYZER_PROGRESS.md
 ├── scripts/
 ├── captures/
+│   └── logic-analyzer/
 ├── pyproject.toml
 ├── requirements.txt
 └── README.md
@@ -127,10 +132,87 @@ run_interactive.bat
 run_tests.bat
 ```
 
-## Samostatné diagnostické nástroje
+## NFC Logic Analyzer (read-only)
 
-Některé výzkumné funkce zatím zůstávají jako samostatné Python skripty
-v kořeni ElaToolu.
+Sleduje session registry a 64B SRAM na **společné časové ose sekvenčně
+provedených měření** (ne simultánní záznam). První verze je CLI-only a
+striktně read-only.
+
+### Požadavky
+
+- ELATEC TWN4 s PRS Simple Protocol firmware;
+- Python 3.10+ a nainstalovaný `elatec-uid-tool`;
+- štítek NTAG I²C Plus (testováno na VUSION 2.6 BWR GU140).
+
+### Spuštění
+
+```bash
+python -m elatec_uid_tool logic-analyzer --port COM6
+```
+
+S parametry:
+
+```bash
+python -m elatec_uid_tool logic-analyzer \
+  --port COM6 \
+  --duration 5 \
+  --interval-ms 50 \
+  --output-dir captures/logic-analyzer \
+  --verbose
+```
+
+Volitelné sledování aplikačního EEPROM bloku `0x30`–`0x37`:
+
+```bash
+python -m elatec_uid_tool logic-analyzer --port COM6 --watch-eeprom
+```
+
+| Parametr | Výchozí | Význam |
+|---|---|---|
+| `--port` | `auto` | COM port nebo automatická detekce ELATEC |
+| `--duration` | `5` | délka capture v sekundách |
+| `--interval-ms` | `50` | cílový interval vzorkování |
+| `--output-dir` | `captures/logic-analyzer` | kořen výstupů |
+| `--watch-eeprom` | vypnuto | sledovat EEPROM `0x30`–`0x37` |
+| `--verbose` | vypnuto | živý výpis změn |
+
+### Výstup
+
+```text
+captures/logic-analyzer/YYYY-MM-DD_HH-MM-SS_<UID>/
+  metadata.json
+  timeline.jsonl
+  samples.csv
+  report.txt
+  errors.jsonl            # jen při chybách
+  initial_eeprom.bin      # jen s --watch-eeprom
+  final_eeprom.bin        # jen s --watch-eeprom
+```
+
+Capture adresáře jsou v Gitu ignorované. Pro další analýzu stačí předat
+celý adresář capture.
+
+### Omezení měření
+
+- Session a SRAM se čtou sekvenčně v pořadí `session → SRAM → [EEPROM]`.
+- SRAM přes RF (`FAST_READ 0xF0–0xFF`) je podle NXP datasheetu dostupná
+  v pass-through režimu; mimo něj může tag vrátit NAK nebo nuly.
+- Lokální fyzické ověření SRAM mapování ještě probíhá.
+- Interval je přibližný; při pomalém RF se zpoždění zaznamená, bez dohánění.
+
+### Hypotéza
+
+Elektronika štítku může při RF aktivitě měnit session registry a v aktivním
+okně (`NC_REG≈0x7C`) používat pass-through / SRAM. Jde o **hypotézu**,
+nikoli potvrzený fakt.
+
+Podrobnosti: [docs/NFC_LOGIC_ANALYZER.md](docs/NFC_LOGIC_ANALYZER.md).
+
+## Samostatné diagnostické nástroje (legacy)
+
+Některé výzkumné funkce zůstávají jako samostatné Python skripty
+v kořeni ElaToolu. Po zavedení `logic-analyzer` je považujte za
+legacy / compatibility wrappers — zatím se nemažou.
 
 ### Dump NTAG
 
@@ -198,12 +280,10 @@ session registry nebo SRAM.
 
 ## Plán dalšího vývoje
 
-1. sjednotit jednorázové skripty pod jedno CLI;
-2. implementovat read-only monitor 64B SRAM;
-3. spojit session registry a SRAM do společné časové osy;
-4. přidat sledování kritických EEPROM stránek `0x30–0x37`;
-5. vytvořit NFC Logic Analyzer s exportem CSV, JSON a TXT;
-6. později připojit ElaTool k rozhraní OpenVusion.
+1. fyzicky ověřit SRAM `FAST_READ F0–FF` na referenčním štítku;
+2. offline analýza timeline (korelace session ↔ SRAM);
+3. sjednotit legacy skripty jako tenké wrappery nad CLI;
+4. později připojit ElaTool k rozhraní OpenVusion.
 
 ## Bezpečnost
 
