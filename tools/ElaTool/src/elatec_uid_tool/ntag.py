@@ -4,6 +4,41 @@ from dataclasses import dataclass
 
 from .protocol import SerialCommunicationError, SimpleProtocolClient
 
+# ---------------------------------------------------------------------------
+# RF memory map constants — NTAG I²C Plus 1K (NT3H2111)
+# ---------------------------------------------------------------------------
+#
+# Session registers: verified in-repo via FAST_READ 3A EC ED.
+SESSION_START_PAGE = 0xEC
+SESSION_END_PAGE = 0xED
+SESSION_SIZE_BYTES = 8
+
+# SRAM via RF in pass-through mode (PTHRU_ON_OFF = NC_REG bit 6):
+# NXP NT3H2111_2211 datasheet maps the 64-byte SRAM to RF pages F0h–FFh
+# while pass-through is enabled. Outside pass-through, NFC cannot access
+# SRAM directly (NAK or zeros for an invalid/overhanging range).
+# This RF mapping has not yet been confirmed by a local physical capture;
+# treat failures outside the active session window as expected.
+SRAM_RF_START_PAGE = 0xF0
+SRAM_RF_END_PAGE = 0xFF
+SRAM_SIZE_BYTES = 64
+
+# Optional EEPROM watch window used by the logic analyzer (application block).
+EEPROM_WATCH_START_PAGE = 0x30
+EEPROM_WATCH_END_PAGE = 0x37
+EEPROM_WATCH_SIZE_BYTES = 32
+
+SESSION_REGISTER_NAMES = (
+    "NC_REG",
+    "LAST_NDEF_BLOCK",
+    "SRAM_MIRROR_BLOCK",
+    "WDT_LS",
+    "WDT_MS",
+    "I2C_CLOCK_STR",
+    "NS_REG",
+    "RFU",
+)
+
 
 def crc_a(data: bytes) -> bytes:
     """Vypočítá ISO/IEC 14443-A CRC v pořadí bajtů posílaném po RF."""
@@ -194,4 +229,49 @@ class NtagI2CPlus:
             0xE8: block[0:4],
             0xE9: block[4:8],
         }
+
+    def fast_read(self, start_page: int, end_page: int) -> bytes:
+        """FAST_READ (0x3A): načte stránky start_page až end_page včetně.
+
+        Read-only. Nečte za zadaný konec rozsahu.
+        """
+        if not 0 <= start_page <= 0xFF:
+            raise ValueError("start_page musí být 0 až 255.")
+        if not 0 <= end_page <= 0xFF:
+            raise ValueError("end_page musí být 0 až 255.")
+        if end_page < start_page:
+            raise ValueError("end_page nesmí být menší než start_page.")
+
+        expected = (end_page - start_page + 1) * 4
+        data = self.transceive(bytes((0x3A, start_page, end_page)))
+
+        if len(data) != expected:
+            raise SerialCommunicationError(
+                f"FAST_READ 0x{start_page:02X}–0x{end_page:02X} měl vrátit "
+                f"{expected} bajtů, přišlo {len(data)}: "
+                f"{data.hex(' ').upper()}"
+            )
+
+        return data
+
+    def read_session_registers(self) -> bytes:
+        """Přečte session registry 0xEC–0xED přes read-only FAST_READ.
+
+        Vrací přesně 8 bajtů v pořadí SESSION_REGISTER_NAMES.
+        """
+        return self.fast_read(SESSION_START_PAGE, SESSION_END_PAGE)
+
+    def read_sram(self) -> bytes:
+        """Přečte 64bajtovou SRAM přes RF mapování pass-through (0xF0–0xFF).
+
+        Používá pouze FAST_READ. Platný přístup vyžaduje podle NXP datasheetu
+        zapnutý pass-through (session NC_REG.PTHRU_ON_OFF). Mimo tento režim
+        může tag vrátit NAK nebo nuly — to není zápis ani změna stavu tagu
+        ze strany tohoto nástroje.
+        """
+        return self.fast_read(SRAM_RF_START_PAGE, SRAM_RF_END_PAGE)
+
+    def read_eeprom_range(self, start_page: int, end_page: int) -> bytes:
+        """Přečte souvislý EEPROM rozsah přes read-only FAST_READ."""
+        return self.fast_read(start_page, end_page)
 
