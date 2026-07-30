@@ -1,0 +1,2 @@
+[console_scripts]
+elatec-uid = elatec_uid_tool.cli:main

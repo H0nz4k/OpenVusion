@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Captures may contain large or device-specific data
+captures/**/*.bin
+captures/**/*.csv
+captures/**/*.json
+captures/**/*.txt
+
+# Keep directory structure
+!captures/**/.gitkeep
+
+# Local settings
+.env
+*.local

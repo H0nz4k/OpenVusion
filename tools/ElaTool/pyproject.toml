@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "elatec-uid-tool"
+dynamic = ["version"]
+description = "Terminálový analyzátor UID pro ELATEC TWN4 a AppBlaster"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pyserial>=3.5"
+]
+
+[project.scripts]
+elatec-uid = "elatec_uid_tool.cli:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "elatec_uid_tool.__version__"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
