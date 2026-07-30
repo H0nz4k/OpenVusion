@@ -11,6 +11,8 @@ class WorkflowTests(unittest.TestCase):
         parser = build_parser()
         self.assertEqual(parser.parse_args(["test-medium"]).port, "auto")
         self.assertEqual(parser.parse_args(["update-reader"]).devpack, "files520")
+        self.assertEqual(parser.parse_args(["logic-analyzer"]).port, "auto")
+        self.assertEqual(parser.parse_args(["logic-analyzer"]).duration, 5.0)
 
     def test_single_reader_is_automatic(self):
         ports = [("COM13", "Serial RFID Device", "USB VID:PID=09D8:0420")]
