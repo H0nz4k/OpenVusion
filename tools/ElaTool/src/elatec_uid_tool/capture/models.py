@@ -7,6 +7,7 @@ from typing import Any
 EVENT_TYPES = (
     "capture_started",
     "tag_detected",
+    "tag_reselected",
     "get_version",
     "session_sample",
     "session_changed",
@@ -14,9 +15,17 @@ EVENT_TYPES = (
     "sram_changed",
     "eeprom_sample",
     "eeprom_changed",
+    "sampler_disabled",
     "rf_error",
     "tag_lost",
     "capture_finished",
+)
+
+FINISH_STATUSES = (
+    "completed_successfully",
+    "completed_with_errors",
+    "partial",
+    "aborted",
 )
 
 

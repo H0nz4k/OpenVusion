@@ -99,7 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "logic-analyzer",
-        help="Read-only NFC Logic Analyzer (session + SRAM timeline)",
+        help="Read-only NFC Logic Analyzer (default: session-only timeline)",
     )
     p.add_argument("--port", default="auto")
     p.add_argument("--duration", type=float, default=5.0, help="Délka capture v sekundách")
@@ -113,6 +113,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir",
         default="captures/logic-analyzer",
         help="Kořenový adresář pro výstupy capture",
+    )
+    p.add_argument(
+        "--session-only",
+        action="store_true",
+        help="Pouze session registry (výchozí bezpečný režim)",
+    )
+    p.add_argument(
+        "--enable-experimental-sram",
+        action="store_true",
+        help=(
+            "EXPERIMENTÁLNÍ: pokusit se o FAST_READ SRAM 0xF0–0xFF "
+            "(fyzicky neověřeno; při NAK se sampler vypne)"
+        ),
     )
     p.add_argument(
         "--watch-eeprom",

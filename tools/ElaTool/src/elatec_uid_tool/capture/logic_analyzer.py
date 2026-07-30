@@ -11,6 +11,7 @@ from ..ntag import (
     EEPROM_WATCH_START_PAGE,
     SESSION_REGISTER_NAMES,
     SRAM_RF_END_PAGE,
+    SRAM_RF_PHYSICALLY_VERIFIED,
     SRAM_RF_START_PAGE,
     SRAM_SIZE_BYTES,
     NtagI2CPlus,
@@ -26,6 +27,12 @@ from .writer import (
 )
 
 
+FINISH_COMPLETED_SUCCESS = "completed_successfully"
+FINISH_COMPLETED_ERRORS = "completed_with_errors"
+FINISH_PARTIAL = "partial"
+FINISH_ABORTED = "aborted"
+
+
 @dataclass
 class LogicAnalyzerConfig:
     port: str
@@ -33,10 +40,18 @@ class LogicAnalyzerConfig:
     interval_ms: float = 50.0
     output_dir: Path = field(default_factory=lambda: DEFAULT_CAPTURE_ROOT)
     watch_eeprom: bool = False
+    # Safe default: session registers only. SRAM requires explicit opt-in.
+    enable_experimental_sram: bool = False
+    session_only: bool = False
     verbose: bool = False
     timeout: float = 2.0
     wait_tag_s: float = 15.0
     poll_interval_s: float = 0.12
+
+    @property
+    def sram_requested(self) -> bool:
+        """SRAM is requested only with experimental flag and without session-only."""
+        return bool(self.enable_experimental_sram) and not bool(self.session_only)
 
 
 @dataclass
@@ -47,11 +62,21 @@ class LogicAnalyzerResult:
     error_count: int
     sample_cycles: int
     partial: bool
+    finish_status: str
     metadata: dict[str, Any]
 
 
+@dataclass
+class _SamplerState:
+    name: str
+    enabled: bool
+    success: int = 0
+    failure: int = 0
+    disabled_reason: str | None = None
+
+
 class LogicAnalyzerCapture:
-    """Read-only capture session + SRAM (+ optional EEPROM) na jedné ose."""
+    """Read-only capture session registrů (+ volitelně experimentální SRAM/EEPROM)."""
 
     def __init__(
         self,
@@ -75,6 +100,7 @@ class LogicAnalyzerCapture:
         self._seq = 0
         self._t0_ns = 0
         self._writer: CaptureWriter | None = None
+        self._client: Any | None = None
         self._uid: str | None = None
         self._sample_cycles = 0
         self._session_change_count = 0
@@ -82,52 +108,68 @@ class LogicAnalyzerCapture:
         self._eeprom_change_count = 0
         self._unique_session: set[str] = set()
         self._unique_sram: set[str] = set()
-        self._partial = False
-        self._finish_reason = "completed"
+        self._reselect_count = 0
+        self._needs_reselect = False
+        self._aborted = False
+        self._fatal = False
+        self._finish_status = FINISH_PARTIAL
+
+        self._sram_requested = config.sram_requested
+        self._session = _SamplerState("session", enabled=True)
+        self._sram = _SamplerState("sram", enabled=self._sram_requested)
+        self._eeprom = _SamplerState("eeprom", enabled=bool(config.watch_eeprom))
 
     def run(self) -> LogicAnalyzerResult:
         config = self.config
         output_root = Path(config.output_dir)
         output_root.mkdir(parents=True, exist_ok=True)
 
-        started_wall = self._wall_clock()
+        strategy_parts = ["session"]
+        if self._sram.enabled:
+            strategy_parts.append("experimental-sram")
+        if self._eeprom.enabled:
+            strategy_parts.append("eeprom[0x30-0x37]")
+
         metadata: dict[str, Any] = {
-            "schema": 1,
+            "schema": 2,
             "tool": "nfc-logic-analyzer",
             "read_only": True,
-            "started_at": started_wall,
+            "started_at": self._wall_clock(),
             "port": config.port,
             "duration_s": config.duration_s,
             "interval_ms": config.interval_ms,
-            "watch_eeprom": config.watch_eeprom,
-            "sampling_strategy": "session -> sram"
-            + (" -> eeprom[0x30-0x37]" if config.watch_eeprom else ""),
+            "session_only": not self._sram_requested,
+            "enable_experimental_sram": self._sram_requested,
+            "watch_eeprom": self._eeprom.enabled,
+            "sampling_strategy": " -> ".join(strategy_parts),
             "timing_note": (
                 "Společná časová osa sekvenčně provedených měření; "
-                "session a SRAM nejsou simultánní."
+                "samplery nejsou simultánní."
             ),
             "sram_rf_pages": {
                 "start": SRAM_RF_START_PAGE,
                 "end": SRAM_RF_END_PAGE,
                 "size_bytes": SRAM_SIZE_BYTES,
-                "source": "NXP NT3H2111_2211 datasheet (pass-through mapping)",
-                "local_verification": "pending",
+                "source": (
+                    "NXP NT3H2111_2211 datasheet: RF pages F0h–FFh only while "
+                    "pass-through (PTHRU_ON_OFF) is enabled by the I²C host"
+                ),
+                "local_verification": "rejected",
+                "physically_verified": SRAM_RF_PHYSICALLY_VERIFIED,
+                "physical_test_note": (
+                    "2026-07-31: FAST_READ 3A F0 FF returned Type-2 NAK "
+                    "(invalid address or command range) with NC_REG=0x19; "
+                    "subsequent RF reads timed out until reselect."
+                ),
             },
-            "rf_commands": [
-                "SearchTag",
-                "GET_VERSION 60",
-                "FAST_READ 3A EC ED",
-                "FAST_READ 3A F0 FF",
-            ],
+            "rf_commands": ["SearchTag", "GET_VERSION 60", "FAST_READ 3A EC ED"],
         }
-        if config.watch_eeprom:
+        if self._sram.enabled:
+            metadata["rf_commands"].append("FAST_READ 3A F0 FF (experimental)")
+        if self._eeprom.enabled:
             metadata["rf_commands"].append("FAST_READ 3A 30 37")
 
-        directory = create_capture_dir(
-            output_root,
-            "pending",
-            when=datetime.now(),
-        )
+        directory = create_capture_dir(output_root, "pending", when=datetime.now())
         writer = CaptureWriter(directory)
         self._writer = writer
         self._t0_ns = self._clock_ns()
@@ -140,6 +182,7 @@ class LogicAnalyzerCapture:
             if callable(enter):
                 client = enter()
                 entered = True
+            self._client = client
 
             self._emit(
                 "capture_started",
@@ -147,7 +190,9 @@ class LogicAnalyzerCapture:
                     "port": config.port,
                     "duration_s": config.duration_s,
                     "interval_ms": config.interval_ms,
-                    "watch_eeprom": config.watch_eeprom,
+                    "session_only": metadata["session_only"],
+                    "enable_experimental_sram": self._sram.enabled,
+                    "watch_eeprom": self._eeprom.enabled,
                     "capture_dir": str(directory),
                 },
             )
@@ -185,10 +230,17 @@ class LogicAnalyzerCapture:
             metadata["capture_dir"] = str(directory)
 
             self._run_sampling_loop(ntag, writer, metadata)
-            self._finish_reason = "completed"
+        except KeyboardInterrupt:
+            self._aborted = True
+            self._emit(
+                "rf_error",
+                uid=self._uid,
+                error="Capture přerušen uživatelem (KeyboardInterrupt).",
+                decoded={"exception": "KeyboardInterrupt"},
+            )
+            raise
         except BaseException as exc:
-            self._partial = True
-            self._finish_reason = type(exc).__name__
+            self._fatal = True
             self._emit(
                 "rf_error",
                 uid=self._uid,
@@ -197,21 +249,26 @@ class LogicAnalyzerCapture:
             )
             raise
         finally:
+            self._finish_status = self._resolve_finish_status()
             try:
                 self._emit(
                     "capture_finished",
                     uid=self._uid,
                     decoded={
-                        "reason": self._finish_reason,
-                        "partial": self._partial,
+                        "finish_status": self._finish_status,
                         "sample_cycles": self._sample_cycles,
+                        "samplers": self._sampler_summary(),
                     },
                 )
             except Exception:
                 pass
             metadata.update(self._summary_metadata())
             metadata["finished_at"] = self._wall_clock()
-            metadata["partial"] = self._partial
+            metadata["finish_status"] = self._finish_status
+            metadata["partial"] = self._finish_status in (
+                FINISH_PARTIAL,
+                FINISH_ABORTED,
+            )
             metadata["uid"] = self._uid
             try:
                 writer.write_metadata(metadata)
@@ -229,7 +286,6 @@ class LogicAnalyzerCapture:
                         exit_(None, None, None)
                     except Exception:
                         pass
-
             directory = self._finalize_directory_name(directory)
 
         return LogicAnalyzerResult(
@@ -238,12 +294,12 @@ class LogicAnalyzerCapture:
             event_count=writer.event_count,
             error_count=writer.error_count,
             sample_cycles=self._sample_cycles,
-            partial=self._partial,
+            partial=metadata["partial"],
+            finish_status=self._finish_status,
             metadata=metadata,
         )
 
     def run_safe(self) -> LogicAnalyzerResult:
-        """Stejné jako run(), ale při chybě vrátí partial výsledek."""
         try:
             return self.run()
         except BaseException as exc:
@@ -256,23 +312,52 @@ class LogicAnalyzerCapture:
                 error_count=self._writer.error_count,
                 sample_cycles=self._sample_cycles,
                 partial=True,
+                finish_status=self._finish_status or FINISH_PARTIAL,
                 metadata={
                     "partial": True,
+                    "finish_status": self._finish_status or FINISH_PARTIAL,
                     "error": str(exc),
-                    "finish_reason": self._finish_reason,
                     "uid": self._uid,
+                    "samplers": self._sampler_summary(),
                 },
             )
 
+    def _resolve_finish_status(self) -> str:
+        if self._aborted:
+            return FINISH_ABORTED
+        if self._fatal and self._session.success == 0:
+            return FINISH_PARTIAL
+
+        has_errors = (
+            self._session.failure > 0
+            or self._sram.failure > 0
+            or self._eeprom.failure > 0
+            or bool(self._sram.disabled_reason)
+            or bool(self._eeprom.disabled_reason)
+            or self._fatal
+        )
+
+        # Requested SRAM but zero successful samples must not look fully successful.
+        if self._sram_requested and self._sram.success == 0:
+            if self._session.success > 0:
+                return FINISH_COMPLETED_ERRORS
+            return FINISH_PARTIAL
+
+        if self._session.success == 0:
+            return FINISH_PARTIAL
+
+        if has_errors:
+            return FINISH_COMPLETED_ERRORS
+
+        return FINISH_COMPLETED_SUCCESS
+
     def _finalize_directory_name(self, directory: Path) -> Path:
-        """Po uzavření souborů přejmenuje pending adresář na UID."""
         if not self._uid:
             return directory
         uid = self._uid.upper()
         if directory.name.upper().endswith(f"_{uid}"):
             return directory
 
-        # Expected shape: YYYY-MM-DD_HH-MM-SS_PENDING
         parts = directory.name.rsplit("_", 1)
         if len(parts) == 2 and parts[1].upper() == "PENDING":
             target_name = f"{parts[0]}_{uid}"
@@ -318,8 +403,6 @@ class LogicAnalyzerCapture:
         previous_session: bytes | None = None
         previous_sram: bytes | None = None
         previous_eeprom: bytes | None = None
-        initial_eeprom: bytes | None = None
-        tag_lost = False
 
         while True:
             now_ns = self._clock_ns()
@@ -334,83 +417,96 @@ class LogicAnalyzerCapture:
             cycle_started = self._clock_ns()
             self._sample_cycles += 1
 
-            session, rf_us = self._try_read(
-                "FAST_READ 3A EC ED",
-                ntag.read_session_registers,
-            )
-            if session is None and not tag_lost:
-                tag_lost = True
-                self._emit(
-                    "tag_lost",
-                    uid=self._uid,
-                    error="Selhalo čtení session registrů.",
-                )
-            elif session is not None:
-                tag_lost = False
-                self._unique_session.add(session.hex(" ").upper())
-                decoded_hex = {
-                    name: f"0x{value:02X}"
-                    for name, value in zip(SESSION_REGISTER_NAMES, session)
-                }
-                changes = None
-                event_type = "session_sample"
-                if previous_session is not None:
-                    changes = session_changes(previous_session, session)
-                    if changes["changed"]:
-                        event_type = "session_changed"
-                        self._session_change_count += 1
-                self._emit(
-                    event_type,
-                    uid=self._uid,
-                    rf_operation="FAST_READ 3A EC ED",
-                    rf_duration_us=rf_us,
-                    raw_hex=bytes_to_hex(session),
-                    decoded={"registers": decoded_hex, "bytes": list(session)},
-                    changes=changes,
-                )
-                if config.verbose and (changes is None or changes["changed"]):
-                    print(
-                        f"[session] +{self._elapsed_us() / 1000:.1f} ms  "
-                        f"NC=0x{session[0]:02X} NS=0x{session[6]:02X}  "
-                        f"{bytes_to_hex(session)}"
-                    )
-                previous_session = session
+            if self._needs_reselect:
+                self._recover_tag(ntag.client)
 
-            sram, rf_us = self._try_read("FAST_READ 3A F0 FF", ntag.read_sram)
-            if sram is not None:
-                tag_lost = False
-                self._unique_sram.add(sram.hex(" ").upper())
-                changes = None
-                event_type = "sram_sample"
-                if previous_sram is not None:
-                    changes = sram_changes(previous_sram, sram)
-                    if changes["changed"]:
-                        event_type = "sram_changed"
-                        self._sram_change_count += 1
-                self._emit(
-                    event_type,
-                    uid=self._uid,
-                    rf_operation="FAST_READ 3A F0 FF",
-                    rf_duration_us=rf_us,
-                    raw_hex=bytes_to_hex(sram),
-                    decoded={
-                        "size": len(sram),
-                        "ascii_preview": safe_ascii_preview(sram),
-                        "all_zero": sram == bytes(SRAM_SIZE_BYTES),
-                    },
-                    changes=changes,
+            if self._session.enabled:
+                session, rf_us, err = self._try_sampler(
+                    self._session,
+                    "FAST_READ 3A EC ED",
+                    ntag.read_session_registers,
                 )
-                if config.verbose and (changes is None or changes["changed"]):
-                    preview = bytes_to_hex(sram) or ""
-                    print(
-                        f"[sram]    +{self._elapsed_us() / 1000:.1f} ms  "
-                        f"len={len(sram)} zero={sram == bytes(SRAM_SIZE_BYTES)}  "
-                        f"{preview[:47]}..."
+                if session is not None:
+                    self._unique_session.add(session.hex(" ").upper())
+                    decoded_hex = {
+                        name: f"0x{value:02X}"
+                        for name, value in zip(SESSION_REGISTER_NAMES, session)
+                    }
+                    changes = None
+                    event_type = "session_sample"
+                    if previous_session is not None:
+                        changes = session_changes(previous_session, session)
+                        if changes["changed"]:
+                            event_type = "session_changed"
+                            self._session_change_count += 1
+                    self._emit(
+                        event_type,
+                        uid=self._uid,
+                        rf_operation="FAST_READ 3A EC ED",
+                        rf_duration_us=rf_us,
+                        raw_hex=bytes_to_hex(session),
+                        decoded={"registers": decoded_hex, "bytes": list(session)},
+                        changes=changes,
                     )
-                previous_sram = sram
+                    if config.verbose and (changes is None or changes["changed"]):
+                        print(
+                            f"[session] +{self._elapsed_us() / 1000:.1f} ms  "
+                            f"NC=0x{session[0]:02X} NS=0x{session[6]:02X}  "
+                            f"{bytes_to_hex(session)}"
+                        )
+                    previous_session = session
+                elif err is not None:
+                    self._emit(
+                        "tag_lost",
+                        uid=self._uid,
+                        error="Selhalo čtení session registrů.",
+                    )
+                    self._recover_tag(ntag.client)
 
-            if config.watch_eeprom:
-                eeprom, rf_us = self._try_read(
+            if self._sram.enabled:
+                sram, rf_us, err = self._try_sampler(
+                    self._sram,
+                    "FAST_READ 3A F0 FF",
+                    ntag.read_sram,
+                    disable_on_nak=True,
+                )
+                if sram is not None:
+                    self._unique_sram.add(sram.hex(" ").upper())
+                    changes = None
+                    event_type = "sram_sample"
+                    if previous_sram is not None:
+                        changes = sram_changes(previous_sram, sram)
+                        if changes["changed"]:
+                            event_type = "sram_changed"
+                            self._sram_change_count += 1
+                    self._emit(
+                        event_type,
+                        uid=self._uid,
+                        rf_operation="FAST_READ 3A F0 FF",
+                        rf_duration_us=rf_us,
+                        raw_hex=bytes_to_hex(sram),
+                        decoded={
+                            "size": len(sram),
+                            "ascii_preview": safe_ascii_preview(sram),
+                            "all_zero": sram == bytes(SRAM_SIZE_BYTES),
+                            "experimental": True,
+                        },
+                        changes=changes,
+                    )
+                    if config.verbose and (changes is None or changes["changed"]):
+                        preview = bytes_to_hex(sram) or ""
+                        print(
+                            f"[sram]    +{self._elapsed_us() / 1000:.1f} ms  "
+                            f"len={len(sram)}  {preview[:47]}..."
+                        )
+                    previous_sram = sram
+                elif err is not None:
+                    # Immediate reselect prevents timeout cascade on later samplers.
+                    self._recover_tag(ntag.client)
+
+            if self._eeprom.enabled:
+                eeprom, rf_us, err = self._try_sampler(
+                    self._eeprom,
                     "FAST_READ 3A 30 37",
                     lambda: ntag.read_eeprom_range(
                         EEPROM_WATCH_START_PAGE,
@@ -418,8 +514,7 @@ class LogicAnalyzerCapture:
                     ),
                 )
                 if eeprom is not None:
-                    if initial_eeprom is None:
-                        initial_eeprom = eeprom
+                    if previous_eeprom is None:
                         writer.write_binary("initial_eeprom.bin", eeprom)
                     changes = None
                     event_type = "eeprom_sample"
@@ -445,6 +540,8 @@ class LogicAnalyzerCapture:
                         changes=changes,
                     )
                     previous_eeprom = eeprom
+                elif err is not None:
+                    self._recover_tag(ntag.client)
 
             next_sample_ns += interval_ns
             current_ns = self._clock_ns()
@@ -459,17 +556,94 @@ class LogicAnalyzerCapture:
             writer.write_binary("final_eeprom.bin", previous_eeprom)
             metadata["eeprom_watched"] = True
 
-    def _try_read(
+    def _try_sampler(
         self,
+        sampler: _SamplerState,
         operation: str,
         func: Callable[[], bytes],
-    ) -> tuple[bytes | None, int | None]:
+        *,
+        disable_on_nak: bool = False,
+    ) -> tuple[bytes | None, int | None, Exception | None]:
+        if not sampler.enabled:
+            return None, None, None
         try:
             data, rf_us = self._timed(func)
-            return data, rf_us
+            sampler.success += 1
+            return data, rf_us, None
         except (ElatecError, SerialCommunicationError, ValueError) as exc:
-            self._handle_rf_error(operation, exc)
-            return None, None
+            sampler.failure += 1
+            self._handle_rf_error(operation, exc, sampler=sampler.name)
+            if disable_on_nak and self._is_type2_nak(exc):
+                self._disable_sampler(
+                    sampler,
+                    reason=str(exc),
+                    detail="Type-2 NAK — RF adresa/příkaz mimo platný rozsah",
+                )
+            return None, None, exc
+
+    def _disable_sampler(
+        self,
+        sampler: _SamplerState,
+        *,
+        reason: str,
+        detail: str,
+    ) -> None:
+        if not sampler.enabled:
+            return
+        sampler.enabled = False
+        sampler.disabled_reason = reason
+        self._emit(
+            "sampler_disabled",
+            uid=self._uid,
+            error=reason,
+            decoded={
+                "sampler": sampler.name,
+                "detail": detail,
+            },
+        )
+        if self.config.verbose:
+            print(f"[disable] {sampler.name}: {detail}")
+
+    def _recover_tag(self, client: Any) -> bool:
+        self._needs_reselect = False
+        try:
+            tag = client.search_tag()
+        except (ElatecError, SerialCommunicationError) as exc:
+            self._handle_rf_error("SearchTag", exc)
+            return False
+
+        if tag is None:
+            self._emit(
+                "tag_lost",
+                uid=self._uid,
+                error="SearchTag po chybě nenašel tag.",
+            )
+            self._needs_reselect = True
+            return False
+
+        self._reselect_count += 1
+        if self._uid is None:
+            self._uid = tag.id_hex
+        self._emit(
+            "tag_reselected",
+            uid=tag.id_hex,
+            rf_operation="SearchTag",
+            decoded={
+                "uid": tag.id_hex,
+                "tag_type": tag.tag_type,
+                "id_bit_count": tag.id_bit_count,
+                "expected_uid": self._uid,
+                "uid_match": tag.id_hex == self._uid,
+            },
+        )
+        if self.config.verbose:
+            print(f"[reselect] UID={tag.id_hex}")
+        return True
+
+    @staticmethod
+    def _is_type2_nak(exc: Exception) -> bool:
+        text = str(exc).lower()
+        return "odmítl" in text or "nak" in text or "invalid address" in text
 
     def _timed(self, func: Callable[[], Any]) -> tuple[Any, int]:
         started = self._clock_ns()
@@ -514,16 +688,40 @@ class LogicAnalyzerCapture:
         self._writer.write_event(event)
         return event
 
-    def _handle_rf_error(self, operation: str, exc: Exception) -> None:
+    def _handle_rf_error(
+        self,
+        operation: str,
+        exc: Exception,
+        *,
+        sampler: str | None = None,
+    ) -> None:
+        decoded: dict[str, Any] = {"exception": type(exc).__name__}
+        if sampler:
+            decoded["sampler"] = sampler
         self._emit(
             "rf_error",
             uid=self._uid,
             rf_operation=operation,
             error=str(exc),
-            decoded={"exception": type(exc).__name__},
+            decoded=decoded,
         )
         if self.config.verbose:
             print(f"[error]   {operation}: {exc}")
+
+    def _sampler_summary(self) -> dict[str, Any]:
+        def pack(sampler: _SamplerState) -> dict[str, Any]:
+            return {
+                "enabled": sampler.enabled,
+                "success": sampler.success,
+                "failure": sampler.failure,
+                "disabled_reason": sampler.disabled_reason,
+            }
+
+        return {
+            "session": pack(self._session),
+            "sram": pack(self._sram),
+            "eeprom": pack(self._eeprom),
+        }
 
     def _summary_metadata(self) -> dict[str, Any]:
         return {
@@ -533,10 +731,18 @@ class LogicAnalyzerCapture:
             "eeprom_changes": self._eeprom_change_count,
             "unique_session_states": len(self._unique_session),
             "unique_sram_states": len(self._unique_sram),
-            "finish_reason": self._finish_reason,
+            "reselect_count": self._reselect_count,
+            "finish_status": self._finish_status,
+            # Backward-compatible alias used by older readers.
+            "finish_reason": self._finish_status,
+            "samplers": self._sampler_summary(),
         }
 
     def _build_report(self, metadata: dict[str, Any]) -> str:
+        samplers = metadata.get("samplers", {})
+        session = samplers.get("session", {})
+        sram = samplers.get("sram", {})
+        eeprom = samplers.get("eeprom", {})
         lines = [
             "NFC Logic Analyzer — souhrn",
             "===========================",
@@ -549,23 +755,52 @@ class LogicAnalyzerCapture:
             f"Duration: {metadata.get('duration_s')} s",
             f"Interval: {metadata.get('interval_ms')} ms",
             f"Strategy: {metadata.get('sampling_strategy')}",
+            f"Session only: {metadata.get('session_only')}",
+            f"Experimental SRAM: {metadata.get('enable_experimental_sram')}",
             "",
+            f"Finish status: {metadata.get('finish_status')}",
             f"Sample cycles: {metadata.get('sample_cycles', 0)}",
-            f"Session changes: {metadata.get('session_changes', 0)}",
-            f"SRAM changes: {metadata.get('sram_changes', 0)}",
-            f"EEPROM changes: {metadata.get('eeprom_changes', 0)}",
-            f"Unique session states: {metadata.get('unique_session_states', 0)}",
-            f"Unique SRAM states: {metadata.get('unique_sram_states', 0)}",
-            f"Partial capture: {metadata.get('partial', False)}",
-            f"Finish reason: {metadata.get('finish_reason')}",
+            f"Reselect count: {metadata.get('reselect_count', 0)}",
             "",
-            "SRAM RF mapping: pages 0xF0–0xFF (64 B) per NXP datasheet",
-            "pass-through mode. Local physical verification still pending.",
-            "",
-            "Hypotéza (ne fakt): elektronika štítku může při RF aktivitě",
-            "měnit session registry a v aktivním okně používat SRAM / pass-through.",
-            "",
+            "Sampler statistics",
+            "------------------",
+            (
+                f"session: success={session.get('success', 0)} "
+                f"failure={session.get('failure', 0)} "
+                f"enabled={session.get('enabled', False)}"
+            ),
+            (
+                f"sram:    success={sram.get('success', 0)} "
+                f"failure={sram.get('failure', 0)} "
+                f"enabled={sram.get('enabled', False)}"
+            ),
         ]
+        if sram.get("disabled_reason"):
+            lines.append(f"         disabled: {sram.get('disabled_reason')}")
+        lines.append(
+            f"eeprom:  success={eeprom.get('success', 0)} "
+            f"failure={eeprom.get('failure', 0)} "
+            f"enabled={eeprom.get('enabled', False)}"
+        )
+        lines.extend(
+            [
+                "",
+                f"Session changes: {metadata.get('session_changes', 0)}",
+                f"SRAM changes: {metadata.get('sram_changes', 0)}",
+                f"EEPROM changes: {metadata.get('eeprom_changes', 0)}",
+                f"Unique session states: {metadata.get('unique_session_states', 0)}",
+                f"Unique SRAM states: {metadata.get('unique_sram_states', 0)}",
+                "",
+                "SRAM RF access (NXP datasheet): pages 0xF0–0xFF only in",
+                "pass-through mode. This tool never enables pass-through.",
+                "Physical test 2026-07-31: FAST_READ F0–FF → Type-2 NAK",
+                "(invalid address or command range) with NC_REG=0x19.",
+                "",
+                "Hypotéza (ne fakt): host MCU může dočasně zapínat pass-through;",
+                "bez zápisu do session registrů to z RF strany neověříme.",
+                "",
+            ]
+        )
         if self._writer is not None:
             lines.append(f"Capture dir: {self._writer.directory}")
             lines.append(f"timeline.jsonl events: {self._writer.event_count}")

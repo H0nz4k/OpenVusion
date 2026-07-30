@@ -13,15 +13,21 @@ SESSION_START_PAGE = 0xEC
 SESSION_END_PAGE = 0xED
 SESSION_SIZE_BYTES = 8
 
-# SRAM via RF in pass-through mode (PTHRU_ON_OFF = NC_REG bit 6):
-# NXP NT3H2111_2211 datasheet maps the 64-byte SRAM to RF pages F0h–FFh
-# while pass-through is enabled. Outside pass-through, NFC cannot access
-# SRAM directly (NAK or zeros for an invalid/overhanging range).
-# This RF mapping has not yet been confirmed by a local physical capture;
-# treat failures outside the active session window as expected.
+# SRAM via RF — experimental / not physically verified for direct access.
+#
+# NXP NT3H2111_2211 datasheet:
+# - Outside pass-through/mirror, NFC cannot access SRAM (invalid → NAK).
+# - With PTHRU_ON_OFF=1, SRAM is mapped to RF pages F0h–FFh.
+# - With SRAM_MIRROR_ON_OFF=1, SRAM appears in user memory at SRAM_MIRROR_BLOCK.
+#
+# Physical test on VUSION / NTAG I²C Plus 1K (2026-07-31, NC_REG=0x19):
+#   FAST_READ 3A F0 FF → Type-2 NAK "invalid address or command range"
+# and subsequently destabilized the RF session (timeouts).
+# Therefore read_sram() must remain opt-in and is NOT a verified path.
 SRAM_RF_START_PAGE = 0xF0
 SRAM_RF_END_PAGE = 0xFF
 SRAM_SIZE_BYTES = 64
+SRAM_RF_PHYSICALLY_VERIFIED = False
 
 # Optional EEPROM watch window used by the logic analyzer (application block).
 EEPROM_WATCH_START_PAGE = 0x30
@@ -262,12 +268,11 @@ class NtagI2CPlus:
         return self.fast_read(SESSION_START_PAGE, SESSION_END_PAGE)
 
     def read_sram(self) -> bytes:
-        """Přečte 64bajtovou SRAM přes RF mapování pass-through (0xF0–0xFF).
+        """EXPERIMENTÁLNÍ: pokus o FAST_READ SRAM stránek 0xF0–0xFF.
 
-        Používá pouze FAST_READ. Platný přístup vyžaduje podle NXP datasheetu
-        zapnutý pass-through (session NC_REG.PTHRU_ON_OFF). Mimo tento režim
-        může tag vrátit NAK nebo nuly — to není zápis ani změna stavu tagu
-        ze strany tohoto nástroje.
+        Read-only. Podle NXP je RF přístup platný jen při pass-through.
+        Fyzický test na NTAG I²C Plus 1K s NC_REG=0x19 vrátil Type-2 NAK
+        (invalid address). Tento nástroj pass-through nezapíná (read-only).
         """
         return self.fast_read(SRAM_RF_START_PAGE, SRAM_RF_END_PAGE)
 
