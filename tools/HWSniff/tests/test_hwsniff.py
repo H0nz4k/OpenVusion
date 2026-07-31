@@ -94,6 +94,40 @@ class HWSniffTests(unittest.TestCase):
         sm.set_state(AppState.STORAGE_ERROR)
         self.assertIn("retry", sm.allowed_actions())
 
+    def test_start_shows_sniffing_progress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = deep_merge(
+                DEFAULT_CONFIG,
+                {
+                    "data_root": str(root / "data"),
+                    "capture_root": str(root / "data" / "captures"),
+                    "log_root": str(root / "logs"),
+                    "collector": {"minimum_free_space_mb": 0},
+                },
+            )
+
+            class IdleClient(FakeClient):
+                def search_tag(self, max_id_bytes=32):
+                    return None
+
+            app = HWSniffApp(
+                config=cfg,
+                headless=True,
+                list_ports=lambda: [FakePort()],
+                client_factory=lambda p, t: IdleClient(p, t),
+            )
+            try:
+                app.initialize()
+                app.handle_action(UiAction("start"))
+                snap = app.state.get()
+                self.assertEqual(snap.state, AppState.WAITING_FOR_TAG)
+                self.assertEqual(snap.message, "SNIFFING ACTIVE")
+                self.assertEqual(snap.capture_step_label, "WAITING")
+                self.assertGreaterEqual(snap.capture_step, 1)
+            finally:
+                app.close()
+
     def test_boot_to_ready(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

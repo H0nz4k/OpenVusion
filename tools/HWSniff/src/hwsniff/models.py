@@ -47,8 +47,8 @@ USER_TEXT = {
     AppState.READER_MISSING: "READER NOT FOUND",
     AppState.MULTIPLE_READERS: "MULTIPLE READERS",
     AppState.READY: "READY",
-    AppState.STARTING: "Starting…",
-    AppState.WAITING_FOR_TAG: "Přiložte štítek",
+    AppState.STARTING: "SNIFFING…",
+    AppState.WAITING_FOR_TAG: "SNIFFING ACTIVE",
     AppState.TAG_DETECTED: "TAG DETECTED",
     AppState.READING_IDENTIFICATION: "IDENTIFICATION",
     AppState.READING_EEPROM: "EEPROM",
@@ -85,6 +85,35 @@ SWEETP_STATES = {
     AppState.SWEETP_CANCELLED,
 }
 
+FIELD_ACTIVE_STATES = {
+    AppState.STARTING,
+    AppState.WAITING_FOR_TAG,
+    AppState.TAG_DETECTED,
+    AppState.READING_IDENTIFICATION,
+    AppState.READING_EEPROM,
+    AppState.READING_APPLICATION,
+    AppState.READING_SESSION,
+    AppState.VERIFYING,
+    AppState.SAVING,
+    AppState.SUCCESS,
+    AppState.WARNING,
+    AppState.FAILURE,
+    AppState.WAITING_FOR_REMOVAL,
+    AppState.STOPPING,
+}
+
+
+# Ordered capture steps shown in the sniffing progress UI.
+CAPTURE_STEPS = (
+    "WAITING",
+    "IDENTIFICATION",
+    "APPLICATION",
+    "SESSION",
+    "VERIFYING",
+    "SAVING",
+    "DONE",
+)
+
 
 @dataclass
 class UiSnapshot:
@@ -102,6 +131,9 @@ class UiSnapshot:
     sweetp_attempt: int = 0
     sweetp_total: int = 0
     sweetp_successes: int = 0
+    capture_step: int = 0
+    capture_step_total: int = 6
+    capture_step_label: str = ""
 
 
 @dataclass

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .models import SWEETP_STATES, AppState, UiSnapshot
+from .models import FIELD_ACTIVE_STATES, SWEETP_STATES, AppState, UiSnapshot
 
 
 @dataclass
@@ -27,6 +27,7 @@ class TouchUI:
         self._font_big = None
         self._clock = None
         self._buttons: list[tuple[Any, str, dict]] = []
+        self._pulse = 0
 
     def start(self) -> None:
         import pygame
@@ -69,8 +70,15 @@ class TouchUI:
             bg = (12, 90, 30)
         elif snap.banner == "error":
             bg = (110, 20, 20)
+        elif snap.state in FIELD_ACTIVE_STATES and snap.state not in (
+            AppState.SUCCESS,
+            AppState.FAILURE,
+            AppState.WARNING,
+        ):
+            bg = (10, 28, 48)
         self._screen.fill(bg)
         self._buttons = []
+        self._pulse = (self._pulse + 1) % 60
 
         def text(line: str, y: int, big: bool = False, color=(240, 240, 240)) -> None:
             font = self._font_big if big else self._font
@@ -80,6 +88,8 @@ class TouchUI:
         state = snap.state
         if state in SWEETP_STATES:
             self._draw_sweetp(snap, text)
+        elif state in FIELD_ACTIVE_STATES:
+            self._draw_sniffing(snap, text)
         else:
             text("OpenVusion HWSniff", 8, big=True)
             text(snap.message or snap.state.value, 48, big=True)
@@ -138,6 +148,8 @@ class TouchUI:
         elif state == AppState.SWEETP_READER_ERROR:
             button("ZRUŠIT", "sweetp_cancel", 40, (180, 40, 40), w=150)
             button("ZNOVU", "sweetp_retry", 250, (180, 120, 20), w=150)
+        elif state in FIELD_ACTIVE_STATES:
+            button("STOP", "stop", self.width // 2 - 70, (180, 40, 40))
         elif state not in (
             AppState.BOOTING,
             AppState.INITIALIZING,
@@ -150,6 +162,39 @@ class TouchUI:
         pg.display.flip()
         if self._clock:
             self._clock.tick(30)
+
+    def _draw_progress_bar(self, step: int, total: int, y: int = 210) -> None:
+        pg = self._pygame
+        total = max(1, total)
+        step = max(0, min(step, total))
+        x, w, h = 16, self.width - 32, 22
+        pg.draw.rect(self._screen, (50, 50, 50), pg.Rect(x, y, w, h), border_radius=6)
+        fill = int(w * (step / total))
+        if fill > 0:
+            color = (40, 170, 90) if step >= total else (40, 140, 220)
+            pg.draw.rect(self._screen, color, pg.Rect(x, y, fill, h), border_radius=6)
+
+    def _draw_sniffing(self, snap: UiSnapshot, text) -> None:
+        dots = "." * (1 + (self._pulse // 15) % 3)
+        title = snap.message or "SNIFFING ACTIVE"
+        text(title[:28], 8, big=True, color=(120, 220, 255))
+        if snap.state == AppState.WAITING_FOR_TAG:
+            text(f"Přiložte štítek{dots}", 52, big=True)
+            text("Sběr běží — čekám na tag", 96)
+        else:
+            text(snap.progress[:40] if snap.progress else snap.state.value, 52, big=True)
+            if snap.capture_step_label:
+                text(
+                    f"Krok: {snap.capture_step_label}",
+                    96,
+                    color=(200, 220, 255),
+                )
+        text(f"UID: {snap.last_uid}", 130)
+        text(f"OK: {snap.ok_count}    Errors: {snap.error_count}", 160)
+        step = snap.capture_step or 0
+        total = snap.capture_step_total or 6
+        text(f"Progres: {step}/{total}", 188)
+        self._draw_progress_bar(step, total, y=218)
 
     def _draw_sweetp(self, snap: UiSnapshot, text) -> None:
         state = snap.state
