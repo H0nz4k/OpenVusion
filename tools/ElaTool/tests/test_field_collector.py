@@ -17,7 +17,7 @@ from elatec_uid_tool.field_collector import (
 from elatec_uid_tool.field_collector.collector import FieldCollector as FC
 from elatec_uid_tool.field_collector.storage import export_bundle_stamp
 from elatec_uid_tool.ntag import crc_a
-from elatec_uid_tool.protocol import TagRead
+from elatec_uid_tool.protocol import SerialCommunicationError, TagRead
 
 
 REFERENCE_BLOCK = bytes.fromhex(
@@ -220,6 +220,58 @@ class FieldCollectorTests(unittest.TestCase):
             self.assertTrue((directory / "dump.json").exists())
             self.assertTrue((directory / "application_block.bin").exists())
             self.assertGreater(len((directory / "dump.bin").read_bytes()), 32)
+
+    def test_full_dump_failure_keeps_application_ok(self):
+        """EEPROM dump errors must not throw away a good application block."""
+
+        class FlakyDumpClient(FakeClient):
+            def iso14443_3_tdx(self, tx, max_rx_bytes=0xFF, timeout_ms=255):
+                op = tx[0]
+                if op == 0x3A:
+                    start, end = tx[1], tx[2]
+                    # Fail the first full-dump chunk once, then succeed via retry path.
+                    if start == 0x00 and end == 0x0F:
+                        if not getattr(self, "_failed_once", False):
+                            self._failed_once = True
+                            raise SerialCommunicationError("dump timeout")
+                    if start == 0x30 and end == 0x37:
+                        return with_crc(REFERENCE_BLOCK)
+                    if start == 0xEC:
+                        return with_crc(bytes((0x19, 0, 0xF8, 0x48, 0x08, 1, 0x01, 0)))
+                    pages = end - start + 1
+                    return with_crc(bytes(pages * 4))
+                return super().iso14443_3_tdx(tx, max_rx_bytes, timeout_ms)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = CollectorConfig(
+                capture_root=str(root / "captures"),
+                data_root=str(root),
+                application_samples=1,
+                session_duration_seconds=0,
+                include_session=False,
+                include_full_dump=True,
+                full_dump_samples=1,
+                wait_for_removal=False,
+                export_bundle_root=None,
+            )
+            collector = FieldCollector(
+                config,
+                client_factory=lambda p, t: FlakyDumpClient(p, t),
+                sleep=lambda s: None,
+            )
+            result = collector.capture_one("COM6")
+            self.assertIn(
+                result.finish_status,
+                (
+                    FinishStatus.COMPLETED_SUCCESSFULLY,
+                    FinishStatus.COMPLETED_WITH_ERRORS,
+                ),
+            )
+            self.assertTrue(result.directory)
+            self.assertTrue(
+                (Path(result.directory) / "application_block.bin").exists()
+            )
 
     def test_one_tag_sniff_makes_one_tar(self):
         with tempfile.TemporaryDirectory() as tmp:

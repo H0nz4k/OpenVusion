@@ -393,6 +393,8 @@ class HWSniffApp:
             self._set_waiting_for_removal(uid=payload.get("uid"))
             log_event(self.logger, "waiting_for_removal", **payload)
         elif name == "tag_removed":
+            # Clear sticky error/removal UI so the next present can proceed.
+            self._banner_until = 0.0
             if self.collector.running:
                 self._set_waiting_for_tag()
             log_event(self.logger, "tag_removed", **payload)
@@ -506,7 +508,21 @@ class HWSniffApp:
                     (self.config.get("ui") or {}).get("error_display_seconds", 3.0)
                 )
             log_event(self.logger, "capture_result", **payload)
-        elif name in ("loop_error", "collector_fatal"):
+        elif name == "loop_error":
+            # Transient serial glitch during a running session — stay collecting.
+            # Do not freeze the UI on READER_DISCONNECTED / Oddalte.
+            self._banner_until = 0.0
+            if self.collector.running:
+                self.state.update(banner="error", progress=str(payload.get("error") or "")[:40])
+                self._set_waiting_for_tag()
+            else:
+                self.state.set_state(
+                    AppState.READER_DISCONNECTED,
+                    message="READER DISCONNECTED",
+                    banner="error",
+                )
+            log_event(self.logger, name, **payload)
+        elif name == "collector_fatal":
             self.state.set_state(
                 AppState.READER_DISCONNECTED,
                 message="READER DISCONNECTED",

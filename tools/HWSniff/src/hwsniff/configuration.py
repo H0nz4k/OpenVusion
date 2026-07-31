@@ -17,9 +17,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "reconnect_delay_seconds": 2,
     },
     "collector": {
-        "application_samples": 5,
-        "full_dump_samples": 0,
-        "session_duration_seconds": 2.0,
+        "application_samples": 3,
+        "session_duration_seconds": 1.0,
         "session_interval_ms": 50,
         "allow_duplicate": False,
         "wait_for_removal": True,

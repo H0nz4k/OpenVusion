@@ -140,6 +140,7 @@ class FieldCollector:
                     port, self.config.handshake_timeout_seconds
                 ) as client:
                     while not self._stop.is_set():
+                        result: FieldCaptureResult | None = None
                         self._busy.set()
                         try:
                             emit("capture_started", port=port)
@@ -156,26 +157,37 @@ class FieldCollector:
                         finally:
                             self._busy.clear()
 
+                        if result is None:
+                            break
                         if on_result:
                             on_result(result)
 
-                        if (
+                        need_removal = (
                             self.config.wait_for_removal
                             and result.uid
                             and result.finish_status != FinishStatus.ABORTED
-                        ):
+                        ) or result.finish_status == FinishStatus.DUPLICATE_SKIPPED
+                        if need_removal:
                             emit("waiting_for_removal", uid=result.uid)
-                            self._wait_for_removal_client(client)
-                            if not self._stop.is_set():
-                                emit("tag_removed", uid=result.uid)
-                        elif result.finish_status == FinishStatus.DUPLICATE_SKIPPED:
-                            # Same resting tag: RF-wake poll would re-hit immediately.
-                            self._sleep(self.config.poll_interval_seconds)
-                            self._wait_for_removal_client(client)
-                            if not self._stop.is_set():
-                                emit("tag_removed", uid=result.uid)
+                            try:
+                                self._wait_for_removal_client(client)
+                            except (
+                                ElatecError,
+                                SerialCommunicationError,
+                                OSError,
+                            ) as exc:
+                                emit("loop_error", error=str(exc))
+                            finally:
+                                # Always unblock UI — even after serial errors —
+                                # so the next present can start a new capture.
+                                if not self._stop.is_set():
+                                    emit("tag_removed", uid=result.uid)
+                            if result.finish_status == FinishStatus.DUPLICATE_SKIPPED:
+                                self._sleep(self.config.poll_interval_seconds)
             except (ElatecError, SerialCommunicationError, OSError) as exc:
                 emit("loop_error", error=str(exc))
+                # Unstick UI that may still show "Oddalte štítek".
+                emit("tag_removed", uid=None)
                 self._sleep(1.0)
         emit("loop_stopped", port=port)
 
@@ -216,10 +228,17 @@ class FieldCollector:
                 raise SerialCommunicationError("Tag timeout")
 
     def _wait_for_removal_client(self, client: Any) -> None:
+        """Return when the tag is gone. Require two consecutive misses."""
+        consecutive_misses = 0
         while not self._stop.is_set():
-            # Wake-on-miss so a HALTed-but-present tag is not mistaken for gone.
-            if self._search_tag(client) is None:
-                return
+            # Wake-on-miss: HALTed-but-present tags must not look like "removed".
+            tag = self._search_tag(client)
+            if tag is None:
+                consecutive_misses += 1
+                if consecutive_misses >= 2:
+                    return
+            else:
+                consecutive_misses = 0
             self._sleep(0.2)
 
     def _wait_for_removal(self, port: str) -> None:
@@ -231,12 +250,27 @@ class FieldCollector:
         except (ElatecError, SerialCommunicationError, OSError):
             return
 
-    def _read_full_dump(self, ntag: NtagI2CPlus) -> bytes:
+    def _ensure_selected(self, client: Any, expected_uid: str | None) -> TagRead:
+        tag = self._search_tag(client)
+        if tag is None:
+            raise SerialCommunicationError("Tag lost during capture")
+        if expected_uid and tag.id_hex.upper() != expected_uid.upper():
+            raise SerialCommunicationError(
+                f"UID changed during capture: {expected_uid} → {tag.id_hex}"
+            )
+        return tag
+
+    def _read_full_dump(self, client: Any, ntag: NtagI2CPlus, uid: str) -> bytes:
         chunks: list[bytes] = []
         page = FULL_DUMP_START_PAGE
         while page <= FULL_DUMP_END_PAGE:
             end = min(page + FULL_DUMP_CHUNK_PAGES - 1, FULL_DUMP_END_PAGE)
-            chunks.append(ntag.read_eeprom_range(page, end))
+            try:
+                chunks.append(ntag.read_eeprom_range(page, end))
+            except (ElatecError, SerialCommunicationError, ValueError):
+                # Long dumps often need a reselect mid-way on TWN4.
+                self._ensure_selected(client, uid)
+                chunks.append(ntag.read_eeprom_range(page, end))
             page = end + 1
         return b"".join(chunks)
 
@@ -282,6 +316,9 @@ class FieldCollector:
                 )
 
             ntag = NtagI2CPlus(client)
+            # Reselect before RF reads — tag may already have been in the field.
+            self._ensure_selected(client, uid)
+
             progress(CapturePhase.IDENTIFICATION, message="GET_VERSION")
             version = ntag.get_version()
             get_version = version.raw.hex(" ").upper()
@@ -295,10 +332,17 @@ class FieldCollector:
                     sample_total=total,
                     message=f"APPLICATION {index}/{total}",
                 )
-                block = ntag.read_eeprom_range(
-                    EEPROM_WATCH_START_PAGE,
-                    EEPROM_WATCH_END_PAGE,
-                )
+                try:
+                    block = ntag.read_eeprom_range(
+                        EEPROM_WATCH_START_PAGE,
+                        EEPROM_WATCH_END_PAGE,
+                    )
+                except (ElatecError, SerialCommunicationError, ValueError):
+                    self._ensure_selected(client, uid)
+                    block = ntag.read_eeprom_range(
+                        EEPROM_WATCH_START_PAGE,
+                        EEPROM_WATCH_END_PAGE,
+                    )
                 app_blocks.append(block)
                 if index < total:
                     self._sleep(0.05)
@@ -312,24 +356,40 @@ class FieldCollector:
             session_samples: list[bytes] = []
             if self.config.include_session and self.config.session_duration_seconds > 0:
                 progress(CapturePhase.SESSION, message="SESSION")
-                end = time.monotonic() + self.config.session_duration_seconds
-                while time.monotonic() < end:
-                    session_samples.append(ntag.read_session_registers())
-                    self._sleep(self.config.session_interval_ms / 1000.0)
-                session_bytes = session_samples[0] if session_samples else None
+                try:
+                    self._ensure_selected(client, uid)
+                    end = time.monotonic() + self.config.session_duration_seconds
+                    while time.monotonic() < end:
+                        try:
+                            session_samples.append(ntag.read_session_registers())
+                        except (ElatecError, SerialCommunicationError, ValueError):
+                            self._ensure_selected(client, uid)
+                            session_samples.append(ntag.read_session_registers())
+                        self._sleep(self.config.session_interval_ms / 1000.0)
+                    session_bytes = session_samples[0] if session_samples else None
+                except (ElatecError, SerialCommunicationError, ValueError) as exc:
+                    # Session is optional — keep application block capture.
+                    errors.append(f"session read failed: {exc}")
+                    session_bytes = None
 
             full_dump: bytes | None = None
             if self.config.include_full_dump:
                 progress(CapturePhase.EEPROM, message="EEPROM")
-                samples = max(1, int(self.config.full_dump_samples or 1))
-                dumps: list[bytes] = []
-                for index in range(samples):
-                    dumps.append(self._read_full_dump(ntag))
-                    if index + 1 < samples:
-                        self._sleep(0.05)
-                if len({d.hex() for d in dumps}) != 1:
-                    errors.append("full dump samples differ")
-                full_dump = dumps[0]
+                try:
+                    self._ensure_selected(client, uid)
+                    samples = max(1, int(self.config.full_dump_samples or 1))
+                    dumps: list[bytes] = []
+                    for index in range(samples):
+                        dumps.append(self._read_full_dump(client, ntag, uid))
+                        if index + 1 < samples:
+                            self._sleep(0.05)
+                    if len({d.hex() for d in dumps}) != 1:
+                        errors.append("full dump samples differ")
+                    full_dump = dumps[0]
+                except (ElatecError, SerialCommunicationError, ValueError) as exc:
+                    # Full dump is best-effort; application block is enough for OK.
+                    errors.append(f"full dump failed: {exc}")
+                    full_dump = None
 
             progress(CapturePhase.SAVING, message="SAVING")
             directory = create_capture_directory(Path(self.config.capture_root), uid)
