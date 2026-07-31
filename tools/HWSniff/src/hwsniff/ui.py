@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass
 from typing import Any
 
 from .models import FIELD_ACTIVE_STATES, SWEETP_STATES, AppState, UiSnapshot
+
+_LOG = logging.getLogger("hwsniff")
 
 
 @dataclass
@@ -28,20 +32,62 @@ class TouchUI:
         self._clock = None
         self._buttons: list[tuple[Any, str, dict]] = []
         self._pulse = 0
+        self.video_driver: str | None = None
 
     def start(self) -> None:
         import pygame
 
-        self._pygame = pygame
-        pygame.init()
-        flags = pygame.FULLSCREEN if self.config.get("fullscreen", True) else 0
-        self._screen = pygame.display.set_mode((self.width, self.height), flags)
-        pygame.display.set_caption("OpenVusion HWSniff")
-        if self.config.get("hide_cursor", True):
-            pygame.mouse.set_visible(False)
-        self._font = pygame.font.SysFont("DejaVu Sans", 22)
-        self._font_big = pygame.font.SysFont("DejaVu Sans", 32, bold=True)
-        self._clock = pygame.time.Clock()
+        preferred = (self.config.get("sdl_videodriver") or "").strip()
+        env_driver = (os.environ.get("SDL_VIDEODRIVER") or "").strip()
+        # Env/config first (your tuned /etc/hwsniff/display.env), then fallbacks.
+        ordered = [preferred, env_driver, "kmsdrm", "fbcon", "x11", "wayland", ""]
+        candidates: list[str] = []
+        for driver in ordered:
+            if driver not in candidates:
+                candidates.append(driver)
+
+        last_error: Exception | None = None
+        for driver in candidates:
+            try:
+                if driver:
+                    os.environ["SDL_VIDEODRIVER"] = driver
+                else:
+                    os.environ.pop("SDL_VIDEODRIVER", None)
+
+                try:
+                    pygame.display.quit()
+                except Exception:  # noqa: BLE001
+                    pass
+                pygame.quit()
+                pygame.init()
+                flags = pygame.FULLSCREEN if self.config.get("fullscreen", True) else 0
+                self._screen = pygame.display.set_mode((self.width, self.height), flags)
+                self._pygame = pygame
+                self.video_driver = driver or pygame.display.get_driver()
+                pygame.display.set_caption("OpenVusion HWSniff")
+                if self.config.get("hide_cursor", True):
+                    pygame.mouse.set_visible(False)
+                self._font = pygame.font.SysFont("DejaVu Sans", 22)
+                self._font_big = pygame.font.SysFont("DejaVu Sans", 32, bold=True)
+                self._clock = pygame.time.Clock()
+                _LOG.info(
+                    "pygame display ok driver=%s size=%sx%s",
+                    self.video_driver,
+                    self.width,
+                    self.height,
+                )
+                return
+            except Exception as exc:  # noqa: BLE001 - try next driver
+                last_error = exc
+                _LOG.warning("pygame driver %r failed: %s", driver or "(default)", exc)
+                try:
+                    pygame.quit()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        raise RuntimeError(
+            f"Unable to open display (tried {candidates!r}): {last_error}"
+        )
 
     def stop(self) -> None:
         if self._pygame:
@@ -234,7 +280,6 @@ class TouchUI:
             trend_txt, trend_col = "STABILNÍ →", (220, 220, 220)
         text(trend_txt, 100, color=trend_col)
 
-        # Quality bar
         x, y, w, h = 16, 132, self.width - 32, 20
         pg.draw.rect(self._screen, (45, 45, 45), pg.Rect(x, y, w, h), border_radius=6)
         fill = int(w * max(0.0, min(1.0, q / 100.0)))
@@ -255,15 +300,6 @@ class TouchUI:
             )
 
 
-USER_FALLBACK = {
-    AppState.SWEETP_WAITING_FOR_TAG: "Hledejte polohu",
-    AppState.SWEETP_CHECKING: "SWEETP LIVE",
-    AppState.SWEETP_GOOD_POSITION: "POSITION OK",
-    AppState.SWEETP_UNSTABLE_POSITION: "SWEETP LIVE",
-    AppState.SWEETP_READER_ERROR: "SWEETP READER ERROR",
-}
-
-
 class HeadlessUI:
     """Test double / non-graphical UI."""
 
@@ -271,6 +307,7 @@ class HeadlessUI:
         self.config = config or {}
         self.actions: list[UiAction] = []
         self.last_snapshot: UiSnapshot | None = None
+        self.video_driver = "headless"
 
     def start(self) -> None:
         return None

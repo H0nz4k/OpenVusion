@@ -41,7 +41,8 @@ sudo systemctl status hwsniff
 
 ## Update after `git pull` (lightweight)
 
-Does **not** re-run apt, recreate users, or touch display config:
+Does **not** re-run apt, recreate users, or touch display config.
+Does **not** overwrite the systemd unit (unless `--update-unit`):
 
 ```bash
 cd /path/to/OpenVusion
@@ -51,6 +52,15 @@ sudo bash tools/HWSniff/update.sh
 
 That syncs code into `/opt/Sniff` and restarts `hwsniff.service`.
 Use `install.sh` only for first-time / full reinstall.
+
+If the screen stays black after update:
+
+```bash
+sudo journalctl -u hwsniff -n 80 --no-pager
+sudo /opt/Sniff/scripts/diagnose.sh
+# apply fixed unit once (adds video/render/input groups):
+sudo bash tools/HWSniff/update.sh --update-unit
+```
 
 Optional display setup (parameterized — no guessed Waveshare overlay):
 

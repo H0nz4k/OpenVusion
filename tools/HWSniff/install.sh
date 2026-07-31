@@ -91,7 +91,23 @@ chown -R "${USER_NAME}:${USER_NAME}" "${DATA_ROOT}" "${LOG_ROOT}"
 chown -R root:root "${PREFIX}"
 chmod 755 "${PREFIX}/scripts/"*.sh 2>/dev/null || true
 
+# Preserve a tuned unit if present; always keep a backup before overwrite.
+if [[ -f /etc/systemd/system/hwsniff.service ]]; then
+  cp -a /etc/systemd/system/hwsniff.service \
+    "/etc/systemd/system/hwsniff.service.bak.$(date +%Y%m%d%H%M%S)"
+fi
 install -m 0644 "${PREFIX}/systemd/hwsniff.service" /etc/systemd/system/hwsniff.service
+# Optional SDL override file — never overwritten if it already exists.
+if [[ ! -f /etc/hwsniff/display.env ]]; then
+  cat >/etc/hwsniff/display.env <<'EOF'
+# Optional SDL overrides for HWSniff (not wiped by update.sh).
+# Examples:
+# SDL_VIDEODRIVER=kmsdrm
+# SDL_VIDEODRIVER=x11
+# SDL_VIDEODRIVER=fbcon
+EOF
+  chmod 644 /etc/hwsniff/display.env
+fi
 systemctl daemon-reload
 systemctl enable hwsniff.service
 

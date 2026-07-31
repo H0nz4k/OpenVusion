@@ -7,16 +7,20 @@ Wants=local-fs.target
 Type=simple
 User=hwsniff
 Group=hwsniff
+# DRM/KMS + serial + touch need these groups even under systemd.
+SupplementaryGroups=dialout video render input
 WorkingDirectory=/opt/Sniff
 Environment=PYTHONUNBUFFERED=1
+# Prefer KMS/DRM for Waveshare without a full desktop. Override in
+# /etc/hwsniff/display.env if needed (e.g. SDL_VIDEODRIVER=x11).
 Environment=SDL_VIDEODRIVER=kmsdrm
+EnvironmentFile=-/etc/hwsniff/display.env
 ExecStart=/opt/Sniff/.venv/bin/python -m hwsniff --config /etc/hwsniff/config.json
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=40
 KillSignal=SIGTERM
 
-# Runtime dirs
 RuntimeDirectory=hwsniff
 StateDirectory=hwsniff
 LogsDirectory=hwsniff

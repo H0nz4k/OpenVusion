@@ -528,10 +528,22 @@ class HWSniffApp:
     def run(self) -> int:
         self._running = True
         self.state.set_state(AppState.BOOTING)
-        self.ui.start()
+        try:
+            self.ui.start()
+        except Exception as exc:  # noqa: BLE001 - must surface display failures
+            log_event(self.logger, "ui_start_failed", error=str(exc))
+            self.logger.exception("UI failed to start: %s", exc)
+            self.state.set_state(AppState.FATAL_ERROR, message="UI START FAILED")
+            # Non-zero so systemd Restart=on-failure can retry after display is ready.
+            return 1
         try:
             self.initialize()
-            log_event(self.logger, "boot", config_keys=list(self.config.keys()))
+            log_event(
+                self.logger,
+                "boot",
+                config_keys=list(self.config.keys()),
+                video_driver=getattr(self.ui, "video_driver", None),
+            )
             while self._running:
                 self.pump()
                 time.sleep(0.03)
