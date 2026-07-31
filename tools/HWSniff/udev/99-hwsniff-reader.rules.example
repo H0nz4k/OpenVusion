@@ -1,0 +1,4 @@
+# Example only — fill VID/PID from real `lsusb` / `udevadm info`.
+# Do not enable until values are verified on your ELATEC TWN4.
+#
+# ATTRS{idVendor}=="09d8", ATTRS{idProduct}=="XXXX", SYMLINK+="hwsniff-reader", MODE="0660", GROUP="dialout"

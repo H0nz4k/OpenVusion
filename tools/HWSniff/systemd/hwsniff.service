@@ -1,0 +1,25 @@
+[Unit]
+Description=OpenVusion HWSniff field collector
+After=local-fs.target
+Wants=local-fs.target
+
+[Service]
+Type=simple
+User=hwsniff
+Group=hwsniff
+WorkingDirectory=/opt/Sniff
+Environment=PYTHONUNBUFFERED=1
+Environment=SDL_VIDEODRIVER=kmsdrm
+ExecStart=/opt/Sniff/.venv/bin/python -m hwsniff --config /etc/hwsniff/config.json
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=40
+KillSignal=SIGTERM
+
+# Runtime dirs
+RuntimeDirectory=hwsniff
+StateDirectory=hwsniff
+LogsDirectory=hwsniff
+
+[Install]
+WantedBy=multi-user.target
