@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # X11 appliance entrypoint — launched by xinit from hwsniff-x11.service.
-# update.sh must never delete this file (it lives in the repo).
-set -euo pipefail
+# Must not exit before exec: any failure here kills xinit (systemd shows SIGHUP).
+set -uo pipefail
 
-# Drop folder for per-tag archives: DDMMYYYY_HH_MM.tar
-mkdir -p /home/sniffer/capture
-chown hwsniff:hwsniff /home/sniffer/capture 2>/dev/null \
-  || chown hwsniff:hwsniff /home/sniffer/capture
+# Best-effort drop folder for per-tag archives: DDMMYYYY_HH_MM.tar
+# Never abort the UI if this path is missing or not chown-able.
+mkdir -p /home/sniffer/capture 2>/dev/null || true
+chown hwsniff:hwsniff /home/sniffer/capture 2>/dev/null || true
 chmod 0775 /home/sniffer/capture 2>/dev/null || true
 
 exec /usr/sbin/runuser -u hwsniff -- env \

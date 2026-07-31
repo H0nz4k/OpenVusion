@@ -260,7 +260,10 @@ maybe_restart() {
   sleep 2
   systemctl --no-pager --full status hwsniff.service || true
   if ! systemctl is-active --quiet hwsniff.service; then
-    die "hwsniff failed to become active — see journalctl -u hwsniff -n 80"
+    log "hwsniff failed to become active."
+    log "Check:  journalctl -u hwsniff -n 80 --no-pager"
+    log "Wrapper: sed -n '1,40p' /opt/Sniff/scripts/start-hwsniff-appliance.sh"
+    die "service not active after restart (unit/config were NOT rewritten)"
   fi
   log "Service active ✓"
 }
