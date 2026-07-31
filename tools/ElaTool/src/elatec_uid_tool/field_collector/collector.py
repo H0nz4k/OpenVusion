@@ -300,7 +300,11 @@ class FieldCollector:
     ) -> None:
         """Poll for tags until request_stop(). Finishes in-flight capture."""
         self.clear_stop()
-        emit = on_event or (lambda n, p: None)
+
+        def emit(name: str, **payload: Any) -> None:
+            if on_event:
+                on_event(name, payload)
+
         emit("loop_started", port=port)
         while not self._stop.is_set():
             try:
@@ -328,6 +332,9 @@ class FieldCollector:
                     != FinishStatus.ABORTED
                 ):
                     self._wait_for_removal(port)
+                elif result.finish_status == FinishStatus.DUPLICATE_SKIPPED:
+                    # Avoid a tight re-poll loop on the same present tag.
+                    self._sleep(self.config.poll_interval_seconds)
             except (ElatecError, SerialCommunicationError, OSError) as exc:
                 emit("loop_error", error=str(exc))
                 self._sleep(1.0)

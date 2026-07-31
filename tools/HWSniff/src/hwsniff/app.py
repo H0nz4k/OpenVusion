@@ -5,15 +5,14 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from elatec_uid_tool.field_collector import CapturePhase, FinishStatus
-
 from .collector_service import CollectorService
 from .configuration import load_config
 from .logging_setup import log_event, setup_logging
-from .models import AppState, UiSnapshot
-from .reader_detection import scan_readers, select_reader
+from .models import SWEETP_STATES, AppState
+from .reader_detection import scan_readers
 from .state import AppStateMachine
 from .storage import prepare_storage, storage_status
+from .sweetp_service import SweetPService
 from .system_info import request_shutdown
 from .ui import HeadlessUI, TouchUI, UiAction
 
@@ -36,12 +35,16 @@ class HWSniffApp:
         self.collector = CollectorService(
             self.events, client_factory=client_factory
         )
+        self.sweetp = SweetPService(
+            self.events, client_factory=client_factory
+        )
         self._list_ports = list_ports
         self._client_factory = client_factory
         self._selected_port: str | None = None
         self._candidates = []
         self._banner_until = 0.0
         self._running = False
+        self._sweetp_session = False
 
     def initialize(self) -> None:
         self.state.set_state(AppState.INITIALIZING)
@@ -63,6 +66,8 @@ class HWSniffApp:
         self.refresh_reader()
 
     def refresh_reader(self) -> None:
+        previous = self.state.get().state
+        keep_sweetp = previous in SWEETP_STATES
         self.state.set_state(AppState.READER_SEARCH)
         candidates = scan_readers(
             self.config,
@@ -95,6 +100,14 @@ class HWSniffApp:
             return
         chosen = verified[0]
         self._selected_port = chosen.device
+        if keep_sweetp and previous == AppState.SWEETP_READER_ERROR:
+            self.state.set_state(
+                AppState.SWEETP_READER_ERROR,
+                reader_label=f"READER READY: {chosen.device}",
+                message="SWEETP READER ERROR",
+                progress="Čtečka znovu nalezena — ZNOVU",
+            )
+            return
         self.state.set_state(
             AppState.READY,
             reader_label=f"READER READY: {chosen.device}",
@@ -102,6 +115,8 @@ class HWSniffApp:
         )
 
     def start_collection(self) -> None:
+        if self.sweetp.running or self.state.get().state in SWEETP_STATES:
+            return
         self.refresh_reader()
         snap = self.state.get()
         if snap.state != AppState.READY or not self._selected_port:
@@ -127,12 +142,75 @@ class HWSniffApp:
         self.state.set_state(AppState.READY if self._selected_port else AppState.READER_MISSING)
         log_event(self.logger, "stop")
 
+    def start_sweetp(self) -> None:
+        if self.collector.running:
+            return
+        if self.state.get().state != AppState.READY:
+            return
+        # Re-verify reader; SweetP does not require capture storage.
+        self.refresh_reader()
+        snap = self.state.get()
+        if snap.state == AppState.MULTIPLE_READERS:
+            return
+        if snap.state != AppState.READY or not self._selected_port:
+            return
+        self.state.set_state(AppState.SWEETP_STARTING, banner=None, progress="")
+        self._sweetp_session = True
+        self.sweetp.start(self._selected_port, self.config)
+        log_event(self.logger, "sweetp_start", port=self._selected_port)
+
+    def stop_sweetp(self, *, cancelled: bool = True) -> None:
+        self._sweetp_session = False
+        if self.sweetp.running:
+            self.sweetp.cancel()
+        # Drop late worker events so a finishing probe cannot re-enter SweetP UI.
+        while True:
+            try:
+                self.events.get_nowait()
+            except queue.Empty:
+                break
+        if cancelled:
+            self.state.set_state(AppState.SWEETP_CANCELLED, banner=None)
+        self.state.set_state(
+            AppState.READY if self._selected_port else AppState.READER_MISSING,
+            banner=None,
+            progress="",
+            sweetp_quality="",
+            sweetp_attempt=0,
+            sweetp_total=0,
+            sweetp_successes=0,
+            message="READY",
+        )
+        log_event(self.logger, "sweetp_stop", cancelled=cancelled)
+
     def handle_action(self, action: UiAction) -> None:
         name = action.name
         if name == "start":
             self.start_collection()
         elif name == "stop":
             self.stop_collection()
+        elif name == "sweetp":
+            self.start_sweetp()
+        elif name == "sweetp_cancel":
+            self.stop_sweetp(cancelled=True)
+        elif name == "sweetp_done":
+            self.stop_sweetp(cancelled=False)
+        elif name == "sweetp_retry":
+            if self.state.get().state == AppState.SWEETP_READER_ERROR:
+                self.refresh_reader()
+                if self._selected_port and self.state.get().state in (
+                    AppState.READY,
+                    AppState.SWEETP_READER_ERROR,
+                ):
+                    if self.sweetp.running:
+                        self.sweetp.cancel()
+                    self.state.set_state(AppState.SWEETP_STARTING)
+                    self.sweetp.start(self._selected_port, self.config)
+            elif self.sweetp.running:
+                self.sweetp.request_retry()
+                self.state.set_state(AppState.SWEETP_WAITING_FOR_TAG, banner=None)
+            else:
+                self.start_sweetp()
         elif name == "retry":
             self.refresh_reader()
         elif name == "select":
@@ -145,6 +223,8 @@ class HWSniffApp:
                     reader_label=f"READER READY: {self._selected_port}",
                 )
         elif name == "shutdown":
+            if self.sweetp.running or self.collector.running:
+                return
             self.state.set_state(AppState.SHUTDOWN_CONFIRM)
         elif name == "shutdown_cancel":
             self.state.set_state(AppState.READY)
@@ -155,7 +235,76 @@ class HWSniffApp:
             self._running = False
 
     def handle_event(self, name: str, payload: dict[str, Any]) -> None:
-        if name == "tag_detected":
+        if name.startswith("sweetp_") and name not in (
+            "sweetp_cancelled",
+            "sweetp_stopped",
+            "sweetp_started",
+        ):
+            if not self._sweetp_session:
+                return
+        if name == "sweetp_waiting":
+            self.state.set_state(
+                AppState.SWEETP_WAITING_FOR_TAG,
+                message="Přiložte čtečku ke štítku",
+                progress="",
+                banner=None,
+            )
+        elif name == "sweetp_checking":
+            self.state.set_state(
+                AppState.SWEETP_CHECKING,
+                last_uid=payload.get("uid") or self.state.get().last_uid,
+                message="TAG DETECTED",
+                sweetp_attempt=int(payload.get("attempt") or 0),
+                sweetp_total=int(payload.get("total") or 10),
+                progress="Kontroluji stabilitu...",
+            )
+        elif name == "sweetp_attempt":
+            self.state.update(
+                sweetp_attempt=int(payload.get("attempt") or 0),
+                sweetp_total=int(payload.get("total") or 10),
+                progress=(
+                    f"Pokus: {payload.get('attempt')} / {payload.get('total')}"
+                ),
+            )
+        elif name == "sweetp_result":
+            metrics = payload.get("metrics") or {}
+            successes = int(metrics.get("successful_attempts") or 0)
+            total = int(metrics.get("attempts") or payload.get("total") or 10)
+            quality = str(payload.get("quality") or metrics.get("quality") or "")
+            self.state.update(
+                last_uid=payload.get("uid") or self.state.get().last_uid,
+                sweetp_successes=successes,
+                sweetp_total=total,
+                sweetp_quality=quality,
+            )
+            log_event(self.logger, "sweetp_result", **payload)
+            if payload.get("position_ok"):
+                self.state.set_state(
+                    AppState.SWEETP_GOOD_POSITION,
+                    message="POSITION OK",
+                    banner="ok",
+                    progress=f"Quality: {quality}",
+                )
+            else:
+                self.state.set_state(
+                    AppState.SWEETP_UNSTABLE_POSITION,
+                    message="MOVE READER",
+                    banner="error",
+                    progress=f"Quality: {quality}",
+                )
+        elif name == "sweetp_reader_error":
+            self.state.set_state(
+                AppState.SWEETP_READER_ERROR,
+                message="SWEETP READER ERROR",
+                banner="error",
+                progress=str(payload.get("error") or "")[:40],
+            )
+            log_event(self.logger, "sweetp_reader_error", **payload)
+        elif name == "sweetp_cancelled":
+            log_event(self.logger, "sweetp_cancelled", **payload)
+        elif name == "sweetp_stopped":
+            pass
+        elif name == "tag_detected":
             self.state.set_state(
                 AppState.TAG_DETECTED,
                 last_uid=payload.get("uid") or "—",
@@ -216,7 +365,8 @@ class HWSniffApp:
                 self.state.set_state(AppState.READY)
 
     def pump(self) -> None:
-        while True:
+        # Bound work per frame so a busy collector cannot stall the UI thread.
+        for _ in range(64):
             try:
                 event = self.events.get_nowait()
             except queue.Empty:
@@ -228,7 +378,7 @@ class HWSniffApp:
             if self.collector.running:
                 self.state.update(banner=None)
                 self.state.set_state(AppState.WAITING_FOR_TAG, progress="")
-            else:
+            elif self.state.get().state not in SWEETP_STATES:
                 self.state.update(banner=None)
 
         for action in self.ui.poll_actions():
@@ -236,6 +386,8 @@ class HWSniffApp:
         self.ui.draw(self.state.get())
 
     def close(self) -> None:
+        if self.sweetp.running:
+            self.sweetp.cancel()
         if self.collector.running:
             self.collector.stop()
         for handler in list(self.logger.handlers):

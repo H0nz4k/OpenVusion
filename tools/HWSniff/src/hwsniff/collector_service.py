@@ -78,7 +78,7 @@ class CollectorService:
         self._thread.start()
         self._emit("collector_started", port=port)
 
-    def stop(self, *, join_timeout: float = 30.0) -> None:
+    def stop(self, *, join_timeout: float = 5.0) -> None:
         if self._collector:
             self._collector.request_stop()
         if self._thread and self._thread.is_alive():

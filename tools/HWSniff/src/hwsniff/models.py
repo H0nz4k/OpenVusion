@@ -31,6 +31,13 @@ class AppState(str, Enum):
     READER_DISCONNECTED = "READER_DISCONNECTED"
     FATAL_ERROR = "FATAL_ERROR"
     SHUTDOWN_CONFIRM = "SHUTDOWN_CONFIRM"
+    SWEETP_STARTING = "SWEETP_STARTING"
+    SWEETP_WAITING_FOR_TAG = "SWEETP_WAITING_FOR_TAG"
+    SWEETP_CHECKING = "SWEETP_CHECKING"
+    SWEETP_GOOD_POSITION = "SWEETP_GOOD_POSITION"
+    SWEETP_UNSTABLE_POSITION = "SWEETP_UNSTABLE_POSITION"
+    SWEETP_READER_ERROR = "SWEETP_READER_ERROR"
+    SWEETP_CANCELLED = "SWEETP_CANCELLED"
 
 
 USER_TEXT = {
@@ -59,6 +66,23 @@ USER_TEXT = {
     AppState.READER_DISCONNECTED: "READER DISCONNECTED",
     AppState.FATAL_ERROR: "FATAL ERROR",
     AppState.SHUTDOWN_CONFIRM: "Opravdu vypnout?",
+    AppState.SWEETP_STARTING: "SWEETP",
+    AppState.SWEETP_WAITING_FOR_TAG: "SWEETP",
+    AppState.SWEETP_CHECKING: "TAG DETECTED",
+    AppState.SWEETP_GOOD_POSITION: "POSITION OK",
+    AppState.SWEETP_UNSTABLE_POSITION: "MOVE READER",
+    AppState.SWEETP_READER_ERROR: "SWEETP READER ERROR",
+    AppState.SWEETP_CANCELLED: "SWEETP CANCELLED",
+}
+
+SWEETP_STATES = {
+    AppState.SWEETP_STARTING,
+    AppState.SWEETP_WAITING_FOR_TAG,
+    AppState.SWEETP_CHECKING,
+    AppState.SWEETP_GOOD_POSITION,
+    AppState.SWEETP_UNSTABLE_POSITION,
+    AppState.SWEETP_READER_ERROR,
+    AppState.SWEETP_CANCELLED,
 }
 
 
@@ -74,6 +98,10 @@ class UiSnapshot:
     message: str = ""
     candidates: list[str] = field(default_factory=list)
     banner: str | None = None  # "ok" | "error" | None
+    sweetp_quality: str = ""
+    sweetp_attempt: int = 0
+    sweetp_total: int = 0
+    sweetp_successes: int = 0
 
 
 @dataclass

@@ -40,6 +40,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "error_display_seconds": 3.0,
         "allow_shutdown_button": True,
     },
+    "sweetp": {
+        "probe_attempts": 10,
+        "probe_interval_ms": 100,
+        "minimum_success_ratio": 0.9,
+        "minimum_consecutive_successes": 5,
+        "require_stable_uid": True,
+        "require_get_version": True,
+        "require_page_00": True,
+        "require_application_block": True,
+        "auto_repeat_seconds": 0.5,
+    },
 }
 
 

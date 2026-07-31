@@ -11,6 +11,8 @@ a verzování používá [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Read-only **Field Collector API** (`elatec_uid_tool.field_collector`) for
   HWSniff: reader autodetection, continuous capture orchestration, capture
   storage + index + SHA-256 verification. Strictly no NFC write / SRAM APIs.
+- Field Collector `run_continuous` event callback now always receives
+  `(name, payload_dict)`; duplicate-skip path yields briefly to avoid tight loops.
 - Read-only NFC Logic Analyzer (`python -m elatec_uid_tool logic-analyzer`)
   s výchozím bezpečným session-only režimem.
 - `NtagI2CPlus.fast_read`, `read_session_registers` a experimentální `read_sram`.
