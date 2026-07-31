@@ -28,9 +28,25 @@ READY                          SNIFFING ACTIVE
 
 ## Quick install (on Pi)
 
+From an OpenVusion checkout that includes `tools/ElaTool`:
+
 ```bash
-sudo bash tools/HWSniff/install.sh
+cd /path/to/OpenVusion
+sudo bash tools/HWSniff/install.sh --skip-display-config
 sudo systemctl status hwsniff
+sudo /opt/Sniff/scripts/diagnose.sh
+```
+
+Optional display setup (parameterized — no guessed Waveshare overlay):
+
+```bash
+sudo bash tools/HWSniff/install.sh --configure-display
+```
+
+Export captures to a mounted USB volume:
+
+```bash
+sudo /opt/Sniff/scripts/export-data.sh /media/usb
 ```
 
 ## Docs

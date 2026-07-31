@@ -26,6 +26,7 @@ manifest logic. It imports ElaTool’s Field Collector API.
 | Role | Path |
 |---|---|
 | App install | `/opt/Sniff` |
+| Vendored ElaTool | `/opt/Sniff/vendor/ElaTool` |
 | venv | `/opt/Sniff/.venv` |
 | Config | `/etc/hwsniff/config.json` |
 | Data | `/var/lib/hwsniff` |
