@@ -1,0 +1,36 @@
+{
+  "data_root": "/var/lib/hwsniff",
+  "capture_root": "/var/lib/hwsniff/captures",
+  "log_root": "/var/log/hwsniff",
+  "reader": {
+    "auto_detect": true,
+    "preferred_serial": null,
+    "scan_interval_seconds": 2,
+    "handshake_timeout_seconds": 2,
+    "reconnect_delay_seconds": 2
+  },
+  "collector": {
+    "application_samples": 5,
+    "full_dump_samples": 0,
+    "session_duration_seconds": 2.0,
+    "session_interval_ms": 50,
+    "allow_duplicate": false,
+    "wait_for_removal": true,
+    "minimum_free_space_mb": 1024,
+    "include_session": true,
+    "include_full_dump": false
+  },
+  "display": {
+    "fullscreen": true,
+    "width": 480,
+    "height": 320,
+    "rotation": 0,
+    "hide_cursor": true,
+    "show_debug": false
+  },
+  "ui": {
+    "success_display_seconds": 1.5,
+    "error_display_seconds": 3.0,
+    "allow_shutdown_button": true
+  }
+}

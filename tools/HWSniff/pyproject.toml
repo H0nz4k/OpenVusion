@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hwsniff"
+version = "0.1.0"
+description = "OpenVusion Raspberry Pi touchscreen NFC field collector"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pyserial>=3.5",
+    "pygame-ce>=2.4.0",
+]
+
+[project.optional-dependencies]
+dev = ["pygame-ce>=2.4.0"]
+
+[project.scripts]
+hwsniff = "hwsniff.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
