@@ -1,64 +1,71 @@
-# SweetP — reader position guide
+# SweetP — live reader position guide
 
-SweetP is a **read-only** touchscreen mode that helps find a stable physical
+SweetP is a **read-only** live meter that helps find a stable physical
 alignment between an ELATEC TWN4 reader and a VUSION tag.
 
-It is **not** a field capture workflow and **does not** write capture packages
-into `/var/lib/hwsniff/captures` or append the global index.
-
-## Purpose
-
-1. Place the reader near the tag.
-2. Slowly move / rotate until SweetP reports **POSITION OK**.
-3. Remember that position for later field collection with **START**.
+It does **not** write capture packages and does **not** append the field index.
 
 ## Not RF / RSSI
 
-TWN4 transport used here does **not** expose a verified RSSI or RF power metric.
-SweetP therefore never shows:
+TWN4 does **not** expose verified RSSI / RF power in the current stack.
+SweetP therefore shows **position quality / read stability**, never:
 
 - RSSI
 - signal strength
-- RF power percentages
+- RF power %
 
-Displayed **GOOD / USABLE / POOR** is a **communication quality score** derived
-from read stability (success ratio, consecutive successes, UID/data
-consistency, timeouts, reselects) — not field strength.
+## How to use
 
-## Probe sequence (read-only)
+1. From READY tap **SWEETP**.
+2. Slowly move / rotate the reader relative to the tag.
+3. Watch live quality %, trend (LEPŠÍ / HORŠÍ / STABILNÍ), and the bar.
+4. When **POSITION OK** appears (stable high quality for a few seconds),
+   you may still improve the pose or tap **HOTOVO**.
+5. **ZRUŠIT** always stops the worker and frees the serial port.
 
-Each attempt:
+## Quality score (0–100)
 
-1. `SearchTag` / select
-2. UID
-3. `GET_VERSION`
-4. `READ` page `0x00`
-5. Application block `0x30`–`0x37` via `FAST_READ`
+Rolling window (default 20 samples):
 
-Default: 10 attempts, ~100 ms apart.
+| Component | Default weight |
+|---|---|
+| Read success rate | 60 % |
+| Latency score | 25 % |
+| UID consistency | 15 % |
 
-## POSITION OK criteria
+If `use_latency` is false: success 80 % + UID consistency 20 %.
 
-- success ratio ≥ `minimum_success_ratio` (default 0.9)
-- consecutive successes ≥ `minimum_consecutive_successes` (default 5)
-- stable UID across successful attempts
-- consistent `GET_VERSION` and page `0x00`
-- application block exactly 32 bytes and consistent
-- no excessive timeouts / reselects / reader reconnects
+Latency is normalized between `latency_good_ms` and `latency_bad_ms`
+(timeout / slow → 0).
 
-Otherwise: **MOVE READER** (unstable).
+## Trend
 
-## NFC safety
+Compares short-window average quality vs older part of the main window.
+Delta ≥ `trend_threshold` → LEPŠÍ; ≤ −threshold → HORŠÍ; else STABILNÍ.
+`trend_hold_ms` hysteresis reduces flicker.
 
-Strict read-only. No WRITE / FAST_WRITE / PWD_AUTH / SRAM / pass-through.
+## POSITION OK
 
-## Logging
+Requires enough samples, quality ≥ `good_quality_threshold`, high UID
+consistency, held for `good_hold_ms`. Does **not** auto-exit — live
+meter continues; quality drop clears POSITION OK.
 
-Metrics go only to application logs (`hwsniff.log` / `collector.jsonl`).
-Successful SweetP runs do **not** increase the capture OK counter.
+## Live probe (read-only)
 
-## Known limits
+Default sample (~150 ms): `SearchTag` (+ optional `GET_VERSION`).
+Optional page 0x00 / application block via config (slower on Pi 3).
 
-- Quality labels are communication scores, not RF calibration.
-- Needs a working TWN4 USB path (same autodetection as field mode).
-- Does not replace field collection; use START after finding a good pose.
+## Config keys (`sweetp`)
+
+`sample_interval_ms`, `window_size`, `short_window_size`, `trend_threshold`,
+`trend_hold_ms`, `good_quality_threshold`, `poor_quality_threshold`,
+`good_hold_ms`, `latency_good_ms`, `latency_bad_ms`, `weight_*`,
+`use_latency`, `ui_update_ms`, `require_get_version`, `require_page_00`,
+`require_application_block`.
+
+Older configs with only `probe_interval_ms` still work.
+
+## Reader errors
+
+Disconnect / open failure → **SWEETP READER ERROR** with **ZNOVU** / **ZRUŠIT**.
+SweetP and field START remain mutually exclusive.

@@ -26,7 +26,7 @@ READY                          SNIFFING ACTIVE
 └────────────────────┘         └────────────────────┘
 ```
 
-**SWEETP** — read-only position guide (stability probe, no capture dataset).
+**SWEETP** — live read-stability / position-quality meter (not RF RSSI; no capture dataset).
 See [docs/SWEETP.md](docs/SWEETP.md).
 
 ## Quick install (on Pi)
