@@ -89,6 +89,8 @@ class CollectorConfig:
     poll_interval_seconds: float = 0.25
     include_session: bool = True
     include_full_dump: bool = False
+    # After each one-tag sniff, pack all artifacts as DDMMYYYY_HH_MM.tar here.
+    export_bundle_root: str | None = "/home/sniffer/capture"
     label: str = "field"
     state: str = "field"
     notes: str = ""

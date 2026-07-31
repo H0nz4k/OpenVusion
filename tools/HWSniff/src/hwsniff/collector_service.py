@@ -62,6 +62,9 @@ class CollectorService:
             ),
             include_session=bool(coll.get("include_session", True)),
             include_full_dump=bool(coll.get("include_full_dump", False)),
+            export_bundle_root=coll.get(
+                "export_bundle_root", "/home/sniffer/capture"
+            ),
             label="field",
             state="field",
         )

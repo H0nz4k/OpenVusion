@@ -4,6 +4,8 @@ set -euo pipefail
 SKIP_DISPLAY=0
 CONFIGURE_DISPLAY=0
 NO_START=0
+FORCE_UNIT=0
+X11_UNIT=0
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 HWSNIFF_SRC="$(cd "$(dirname "$0")" && pwd)"
 ELATOOL_SRC="${REPO_ROOT}/tools/ElaTool"
@@ -18,8 +20,17 @@ for arg in "$@"; do
     --skip-display-config) SKIP_DISPLAY=1 ;;
     --configure-display) CONFIGURE_DISPLAY=1 ;;
     --no-start) NO_START=1 ;;
+    --force-unit) FORCE_UNIT=1 ;;
+    --x11-unit) X11_UNIT=1 ;;
     -h|--help)
-      echo "Usage: sudo bash install.sh [--skip-display-config|--configure-display] [--no-start]"
+      echo "Usage: sudo bash install.sh [options]"
+      echo "  --skip-display-config  Do not touch display overlays"
+      echo "  --configure-display    Print display guidance only"
+      echo "  --no-start             Install but do not start service"
+      echo "  --force-unit           Overwrite existing systemd unit (DANGEROUS)"
+      echo "  --x11-unit             Install Waveshare xinit/X11 unit template"
+      echo
+      echo "For day-to-day updates use update.sh — NOT this installer."
       exit 0
       ;;
   esac
@@ -87,16 +98,44 @@ else
 fi
 cp -a "${PREFIX}/config/config.example.json" "${CONFIG_DIR}/config.example.json"
 
+# Drop folder for per-capture ZIP bundles (hwsniff must be able to write).
+EXPORT_CAPTURE_ROOT="/home/sniffer/capture"
+mkdir -p "${EXPORT_CAPTURE_ROOT}"
+if id sniffer >/dev/null 2>&1; then
+  chown sniffer:sniffer /home/sniffer 2>/dev/null || true
+  chown sniffer:"${USER_NAME}" "${EXPORT_CAPTURE_ROOT}" 2>/dev/null \
+    || chown "${USER_NAME}:${USER_NAME}" "${EXPORT_CAPTURE_ROOT}"
+  chmod 0775 "${EXPORT_CAPTURE_ROOT}"
+  # Ensure hwsniff can create DDMMYYYY_HH_MM folders.
+  usermod -aG sniffer "${USER_NAME}" 2>/dev/null || true
+else
+  chown "${USER_NAME}:${USER_NAME}" "${EXPORT_CAPTURE_ROOT}"
+  chmod 0775 "${EXPORT_CAPTURE_ROOT}"
+fi
+
 chown -R "${USER_NAME}:${USER_NAME}" "${DATA_ROOT}" "${LOG_ROOT}"
 chown -R root:root "${PREFIX}"
 chmod 755 "${PREFIX}/scripts/"*.sh 2>/dev/null || true
 
-# Preserve a tuned unit if present; always keep a backup before overwrite.
-if [[ -f /etc/systemd/system/hwsniff.service ]]; then
-  cp -a /etc/systemd/system/hwsniff.service \
-    "/etc/systemd/system/hwsniff.service.bak.$(date +%Y%m%d%H%M%S)"
+UNIT_SRC="${PREFIX}/systemd/hwsniff.service"
+if [[ "${X11_UNIT}" -eq 1 ]]; then
+  UNIT_SRC="${PREFIX}/systemd/hwsniff-x11.service"
 fi
-install -m 0644 "${PREFIX}/systemd/hwsniff.service" /etc/systemd/system/hwsniff.service
+
+# Never silently overwrite a working appliance unit (xinit/X11).
+if [[ -f /etc/systemd/system/hwsniff.service && "${FORCE_UNIT}" -eq 0 ]]; then
+  echo "Keeping existing /etc/systemd/system/hwsniff.service (not overwritten)."
+  echo "Templates are in ${PREFIX}/systemd/ (hwsniff.service, hwsniff-x11.service)."
+  echo "To replace intentionally: sudo bash install.sh --force-unit [--x11-unit]"
+else
+  if [[ -f /etc/systemd/system/hwsniff.service ]]; then
+    cp -a /etc/systemd/system/hwsniff.service \
+      "/etc/systemd/system/hwsniff.service.bak.$(date +%Y%m%d%H%M%S)"
+  fi
+  install -m 0644 "${UNIT_SRC}" /etc/systemd/system/hwsniff.service
+  systemctl daemon-reload
+fi
+
 # Optional SDL override file — never overwritten if it already exists.
 if [[ ! -f /etc/hwsniff/display.env ]]; then
   cat >/etc/hwsniff/display.env <<'EOF'

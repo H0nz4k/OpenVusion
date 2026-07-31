@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import tarfile
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,6 +15,7 @@ from elatec_uid_tool.field_collector import (
     pick_single_reader,
 )
 from elatec_uid_tool.field_collector.collector import FieldCollector as FC
+from elatec_uid_tool.field_collector.storage import export_bundle_stamp
 from elatec_uid_tool.ntag import crc_a
 from elatec_uid_tool.protocol import TagRead
 
@@ -134,6 +137,7 @@ class FieldCollectorTests(unittest.TestCase):
                 session_interval_ms=10,
                 include_session=True,
                 wait_for_removal=False,
+                export_bundle_root=None,
             )
             collector = FieldCollector(
                 config,
@@ -157,6 +161,7 @@ class FieldCollectorTests(unittest.TestCase):
                 session_duration_seconds=0,
                 include_session=False,
                 allow_duplicate=False,
+                export_bundle_root=None,
             )
             collector = FieldCollector(
                 config,
@@ -167,6 +172,90 @@ class FieldCollectorTests(unittest.TestCase):
             self.assertEqual(first.finish_status, FinishStatus.COMPLETED_SUCCESSFULLY)
             second = collector.capture_one("COM6")
             self.assertEqual(second.finish_status, FinishStatus.DUPLICATE_SKIPPED)
+
+    def test_resting_tag_needs_rf_wake(self):
+        """Tag already in field (SearchTag miss) must be found after SetRFOff."""
+
+        class RestingClient(FakeClient):
+            def __init__(self, port="COM6", timeout=2.0):
+                super().__init__(port, timeout, present=True)
+                self._awake = False
+                self.rf_off_calls = 0
+
+            def set_rf_off(self):
+                self.rf_off_calls += 1
+                self._awake = True
+
+            def search_tag(self, max_id_bytes=32):
+                if not self._awake:
+                    return None
+                self._awake = False
+                return TagRead(0x04, 56, bytes.fromhex("04367F5A2D7280"))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            config = CollectorConfig(
+                capture_root=str(root / "captures"),
+                data_root=str(root),
+                application_samples=1,
+                session_duration_seconds=0,
+                include_session=False,
+                include_full_dump=True,
+                full_dump_samples=1,
+                wait_for_removal=False,
+                export_bundle_root=None,
+            )
+            client = RestingClient()
+            collector = FieldCollector(
+                config,
+                client_factory=lambda p, t: client,
+                sleep=lambda s: None,
+            )
+            result = collector.capture_one("COM6")
+            self.assertGreaterEqual(client.rf_off_calls, 1)
+            self.assertEqual(result.finish_status, FinishStatus.COMPLETED_SUCCESSFULLY)
+            self.assertEqual(result.uid, "04367F5A2D7280")
+            directory = Path(result.directory)
+            self.assertTrue((directory / "dump.bin").exists())
+            self.assertTrue((directory / "dump.json").exists())
+            self.assertTrue((directory / "application_block.bin").exists())
+            self.assertGreater(len((directory / "dump.bin").read_bytes()), 32)
+
+    def test_one_tag_sniff_makes_one_tar(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            export_root = root / "export"
+            config = CollectorConfig(
+                capture_root=str(root / "captures"),
+                data_root=str(root),
+                application_samples=1,
+                session_duration_seconds=0,
+                include_session=False,
+                include_full_dump=True,
+                full_dump_samples=1,
+                wait_for_removal=False,
+                export_bundle_root=str(export_root),
+            )
+            collector = FieldCollector(
+                config,
+                client_factory=lambda p, t: FakeClient(p, t),
+                sleep=lambda s: None,
+            )
+            result = collector.capture_one("COM6")
+            self.assertEqual(result.finish_status, FinishStatus.COMPLETED_SUCCESSFULLY)
+            stamp = export_bundle_stamp(datetime.now())
+            tar_path = Path(result.metadata["export_bundle"])
+            self.assertTrue(tar_path.exists())
+            self.assertEqual(tar_path.parent, export_root)
+            self.assertTrue(tar_path.name.startswith(stamp[:8]))  # DDMMYYYY…
+            self.assertTrue(tar_path.name.endswith(".tar"))
+            with tarfile.open(tar_path, "r") as archive:
+                names = set(archive.getnames())
+            self.assertIn("application_block.bin", names)
+            self.assertIn("dump.bin", names)
+            self.assertIn("metadata.json", names)
+            self.assertIn("report.txt", names)
+            self.assertIn("hashes.json", names)
 
     def test_no_write_api_on_collector(self):
         for name in FC.FORBIDDEN_METHODS:

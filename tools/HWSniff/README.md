@@ -39,28 +39,25 @@ sudo bash tools/HWSniff/install.sh --skip-display-config
 sudo systemctl status hwsniff
 ```
 
-## Update after `git pull` (lightweight)
+## Safe update (Waveshare / X11 appliance)
 
-Does **not** re-run apt, recreate users, or touch display config.
-Does **not** overwrite the systemd unit (unless `--update-unit`):
+**Do not run `install.sh` for updates.** Use the guardian updater:
 
 ```bash
 cd /path/to/OpenVusion
-git pull
-sudo bash tools/HWSniff/update.sh
+sudo bash tools/HWSniff/safe-update.sh          # pull + sync + verify
+sudo bash tools/HWSniff/safe-update.sh --restart  # same, then restart
 ```
 
-That syncs code into `/opt/Sniff` and restarts `hwsniff.service`.
-Use `install.sh` only for first-time / full reinstall.
+What `safe-update.sh` protects:
+- `/etc/systemd/system/hwsniff.service` (snapshot → restore if changed)
+- `/etc/hwsniff/config.json` and `display.env`
+- ensures `start-hwsniff-appliance.sh` exists after sync
+- never apt, never `--update-unit` / `--force-unit`
 
-If the screen stays black after update:
+Backups land in `/var/lib/hwsniff/update-backups/<timestamp>/`.
 
-```bash
-sudo journalctl -u hwsniff -n 80 --no-pager
-sudo /opt/Sniff/scripts/diagnose.sh
-# apply fixed unit once (adds video/render/input groups):
-sudo bash tools/HWSniff/update.sh --update-unit
-```
+X11 unit template (reference only): `systemd/hwsniff-x11.service`.
 
 Optional display setup (parameterized — no guessed Waveshare overlay):
 

@@ -25,7 +25,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "wait_for_removal": True,
         "minimum_free_space_mb": 1024,
         "include_session": True,
-        "include_full_dump": False,
+        "include_full_dump": True,
+        "full_dump_samples": 1,
+        "export_bundle_root": "/home/sniffer/capture",
     },
     "display": {
         "fullscreen": True,

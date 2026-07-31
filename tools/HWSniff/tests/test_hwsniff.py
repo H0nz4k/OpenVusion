@@ -238,7 +238,31 @@ class HWSniffTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("Restart=on-failure", unit)
         self.assertIn("User=hwsniff", unit)
-        self.assertIn("/opt/Sniff", unit)
+
+    def test_x11_appliance_unit_and_wrapper(self):
+        root = Path(__file__).resolve().parents[1]
+        unit = (root / "systemd" / "hwsniff-x11.service").read_text(encoding="utf-8")
+        wrapper = (root / "scripts" / "start-hwsniff-appliance.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("xinit", unit)
+        self.assertIn("start-hwsniff-appliance.sh", unit)
+        self.assertIn("SDL_VIDEODRIVER=x11", wrapper)
+        self.assertIn("python -m hwsniff", wrapper)
+        update = (root / "update.sh").read_text(encoding="utf-8")
+        self.assertIn("--code-only", update)
+        self.assertIn("will NOT be overwritten", update)
+
+    def test_safe_update_guardian(self):
+        root = Path(__file__).resolve().parents[1]
+        script = (root / "safe-update.sh").read_text(encoding="utf-8")
+        self.assertIn("git pull", script)
+        self.assertIn("--code-only", script)
+        self.assertIn("update-backups", script)
+        self.assertIn("refusing dangerous flag", script)
+        self.assertIn("start-hwsniff-appliance.sh", script)
+        self.assertNotIn("install.sh --force-unit", script)
+        self.assertIn("/opt/Sniff", script)
 
     def test_no_write_api_imports_in_hwsniff(self):
         root = Path(__file__).resolve().parents[1] / "src" / "hwsniff"
@@ -297,6 +321,7 @@ class HWSniffTests(unittest.TestCase):
                         "include_session": False,
                         "wait_for_removal": False,
                         "allow_duplicate": True,
+                        "export_bundle_root": None,
                     },
                     "ui": {
                         "success_display_seconds": 0.05,
@@ -325,6 +350,109 @@ class HWSniffTests(unittest.TestCase):
                 self.assertTrue(saw_ok, "expected at least one capture result")
                 app.handle_action(UiAction("stop"))
             finally:
+                app.close()
+
+    def test_present_tag_leaves_waiting_state(self):
+        """Tag already on reader must advance past WAITING_FOR_TAG."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = deep_merge(
+                DEFAULT_CONFIG,
+                {
+                    "data_root": str(root / "data"),
+                    "capture_root": str(root / "data" / "captures"),
+                    "log_root": str(root / "logs"),
+                    "collector": {
+                        "minimum_free_space_mb": 0,
+                        "application_samples": 1,
+                        "session_duration_seconds": 0,
+                        "include_session": False,
+                        "wait_for_removal": True,
+                        "allow_duplicate": True,
+                        "export_bundle_root": None,
+                    },
+                    "ui": {
+                        "success_display_seconds": 0.05,
+                        "error_display_seconds": 0.05,
+                    },
+                },
+            )
+            app = HWSniffApp(
+                config=cfg,
+                headless=True,
+                list_ports=lambda: [FakePort()],
+                client_factory=lambda p, t: FakeClient(p, t),
+            )
+            try:
+                app.initialize()
+                app.handle_action(UiAction("start"))
+                deadline = time.time() + 2.0
+                left_waiting = False
+                saw_removal_or_ok = False
+                while time.time() < deadline:
+                    app.pump()
+                    snap = app.state.get()
+                    if snap.state not in (
+                        AppState.STARTING,
+                        AppState.WAITING_FOR_TAG,
+                    ):
+                        left_waiting = True
+                    if snap.state == AppState.WAITING_FOR_REMOVAL or snap.ok_count >= 1:
+                        saw_removal_or_ok = True
+                        break
+                    time.sleep(0.05)
+                self.assertTrue(left_waiting, "UI stayed on WAITING_FOR_TAG")
+                self.assertTrue(
+                    saw_removal_or_ok,
+                    "expected capture OK or WAITING_FOR_REMOVAL",
+                )
+                # Late start events must not clobber removal / success UI.
+                app.handle_event("collector_started", {"port": "/dev/ttyACM0"})
+                app.handle_event("loop_started", {"port": "/dev/ttyACM0"})
+                self.assertNotEqual(app.state.get().state, AppState.WAITING_FOR_TAG)
+                app.handle_action(UiAction("stop"))
+            finally:
+                app.close()
+
+    def test_banner_timeout_keeps_removal_prompt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cfg = deep_merge(
+                DEFAULT_CONFIG,
+                {
+                    "data_root": str(root / "data"),
+                    "capture_root": str(root / "data" / "captures"),
+                    "log_root": str(root / "logs"),
+                    "collector": {"minimum_free_space_mb": 0},
+                    "ui": {"success_display_seconds": 0.01},
+                },
+            )
+            app = HWSniffApp(
+                config=cfg,
+                headless=True,
+                list_ports=lambda: [FakePort()],
+                client_factory=lambda p, t: FakeClient(p, t),
+            )
+            try:
+                app.initialize()
+                # Simulate collector still running after a successful capture.
+                app.collector._thread = type(
+                    "T", (), {"is_alive": lambda self: True}
+                )()
+                app.state.set_state(
+                    AppState.SUCCESS,
+                    message="CAPTURE OK",
+                    progress="Oddalte štítek",
+                    last_uid="04367F5A2D7280",
+                    banner="ok",
+                )
+                app._banner_until = time.monotonic() - 0.1
+                app.pump()
+                snap = app.state.get()
+                self.assertEqual(snap.state, AppState.WAITING_FOR_REMOVAL)
+                self.assertIn("Oddalte", snap.message)
+            finally:
+                app.collector._thread = None
                 app.close()
 
 

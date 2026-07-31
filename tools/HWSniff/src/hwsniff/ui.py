@@ -228,6 +228,9 @@ class TouchUI:
         if snap.state == AppState.WAITING_FOR_TAG:
             text(f"Přiložte štítek{dots}", 52, big=True)
             text("Sběr běží — čekám na tag", 96)
+        elif snap.state == AppState.WAITING_FOR_REMOVAL:
+            text(f"Oddalte štítek{dots}", 52, big=True)
+            text("Pak přiložte další", 96)
         else:
             text(snap.progress[:40] if snap.progress else snap.state.value, 52, big=True)
             if snap.capture_step_label:

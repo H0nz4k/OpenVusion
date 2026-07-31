@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
-# Lightweight update after `git pull` — sync code + restart service.
-# Does NOT run apt-get, recreate users, or reconfigure the display.
-# Does NOT overwrite systemd unit unless --update-unit is passed.
-# For a full (re)install use: sudo bash install.sh
+# SAFE code update after `git pull`.
+#
+# NEVER touches:
+#   - apt / system packages
+#   - /etc/systemd/system/hwsniff.service  (unless you pass --update-unit)
+#   - /etc/hwsniff/config.json
+#   - display / Xorg / dtoverlay
+#
+# By default only syncs Python/app code into /opt/Sniff and restarts the
+# *already installed* unit (whatever ExecStart you tuned — xinit or not).
+#
+# Ultra-safe (no restart, no usermod):
+#   sudo bash tools/HWSniff/update.sh --code-only
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -12,22 +21,41 @@ PREFIX="/opt/Sniff"
 RESTART=1
 REINSTALL_DEPS=0
 UPDATE_UNIT=0
+CODE_ONLY=0
+TOUCH_USER=1
 
 for arg in "$@"; do
   case "$arg" in
     --no-restart) RESTART=0 ;;
+    --code-only)
+      CODE_ONLY=1
+      RESTART=0
+      TOUCH_USER=0
+      UPDATE_UNIT=0
+      ;;
     --reinstall-deps) REINSTALL_DEPS=1 ;;
     --update-unit) UPDATE_UNIT=1 ;;
     -h|--help)
-      echo "Usage: sudo bash update.sh [--no-restart] [--reinstall-deps] [--update-unit]"
-      echo
-      echo "After git pull on the Pi:"
-      echo "  cd /path/to/OpenVusion && git pull"
-      echo "  sudo bash tools/HWSniff/update.sh"
-      echo
-      echo "Syncs code into ${PREFIX} and restarts hwsniff.service."
-      echo "By default does NOT rewrite /etc/systemd/system/hwsniff.service"
-      echo "(pass --update-unit only when you intentionally want the template)."
+      cat <<EOF
+Usage: sudo bash update.sh [--code-only] [--no-restart] [--reinstall-deps] [--update-unit]
+
+SAFE default (recommended on a working Pi):
+  cd /path/to/OpenVusion && git pull
+  sudo bash tools/HWSniff/update.sh --code-only
+  # then when ready:
+  sudo systemctl restart hwsniff
+
+What this script does NOT do by default:
+  - apt-get / system package updates
+  - overwrite /etc/systemd/system/hwsniff.service
+  - change /etc/hwsniff/config.json
+  - reconfigure display / Xorg
+
+--code-only     Sync code only (no restart, no usermod, never unit)
+--no-restart    Sync code, leave service running (restart yourself)
+--update-unit   DANGEROUS on Waveshare/X11: installs template unit from repo
+--reinstall-deps  pip install -e ElaTool + HWSniff into venv
+EOF
       exit 0
       ;;
   esac
@@ -49,7 +77,19 @@ if [[ ! -x "${PREFIX}/.venv/bin/python" ]]; then
   exit 1
 fi
 
+echo "=== HWSniff safe update ==="
+echo "Source:  ${HWSNIFF_SRC}"
+echo "Target:  ${PREFIX}"
+if [[ -f /etc/systemd/system/hwsniff.service ]]; then
+  echo "Unit:    /etc/systemd/system/hwsniff.service (will NOT be overwritten)"
+  grep -E '^ExecStart=' /etc/systemd/system/hwsniff.service || true
+else
+  echo "Unit:    (none installed yet)"
+fi
+echo
+
 echo "Syncing HWSniff → ${PREFIX}"
+# Keep local appliance extras that may exist only on the Pi.
 rsync -a --delete \
   --exclude '.venv' \
   --exclude '__pycache__' \
@@ -57,6 +97,7 @@ rsync -a --delete \
   --exclude 'data' \
   --exclude 'logs' \
   --exclude 'vendor' \
+  --exclude 'scripts/local/' \
   "${HWSNIFF_SRC}/" "${PREFIX}/"
 
 if [[ -d "${ELATOOL_SRC}" ]]; then
@@ -75,10 +116,14 @@ if [[ -f "${PREFIX}/config/config.example.json" ]]; then
   cp -a "${PREFIX}/config/config.example.json" /etc/hwsniff/config.example.json
 fi
 
+# Ensure appliance wrapper exists even if an older tree lacked it.
+if [[ ! -f "${PREFIX}/scripts/start-hwsniff-appliance.sh" ]]; then
+  echo "ERROR: missing ${PREFIX}/scripts/start-hwsniff-appliance.sh after sync"
+  exit 1
+fi
 chmod 755 "${PREFIX}/scripts/"*.sh 2>/dev/null || true
 
-# Ensure service user can open DRM / serial / touch (idempotent).
-if id hwsniff >/dev/null 2>&1; then
+if [[ "${TOUCH_USER}" -eq 1 ]] && id hwsniff >/dev/null 2>&1; then
   usermod -aG dialout,video,render,input hwsniff 2>/dev/null \
     || usermod -aG dialout,video,input hwsniff || true
 fi
@@ -90,20 +135,35 @@ if [[ "${REINSTALL_DEPS}" -eq 1 ]]; then
 fi
 
 if [[ "${UPDATE_UNIT}" -eq 1 ]]; then
-  echo "Updating systemd unit from template…"
+  echo
+  echo "WARNING: --update-unit will overwrite /etc/systemd/system/hwsniff.service"
+  echo "Your working xinit/X11 unit will be replaced by the repo template."
+  echo "Prefer copying systemd/hwsniff-x11.service manually if needed."
+  if [[ -f /etc/systemd/system/hwsniff.service ]]; then
+    bak="/etc/systemd/system/hwsniff.service.bak.$(date +%Y%m%d%H%M%S)"
+    cp -a /etc/systemd/system/hwsniff.service "${bak}"
+    echo "Backup: ${bak}"
+  fi
   install -m 0644 "${PREFIX}/systemd/hwsniff.service" /etc/systemd/system/hwsniff.service
   systemctl daemon-reload
 fi
 
 if [[ "${RESTART}" -eq 1 ]]; then
-  echo "Restarting hwsniff…"
+  echo "Restarting hwsniff (unit file unchanged)…"
   systemctl restart hwsniff.service
   sleep 1
   systemctl --no-pager --full status hwsniff.service || true
+else
   echo
-  echo "If UI is black, check:"
-  echo "  journalctl -u hwsniff -n 80 --no-pager"
-  echo "  tail -n 40 /var/log/hwsniff/hwsniff.log"
+  echo "Code synced. Service NOT restarted."
+  if [[ "${CODE_ONLY}" -eq 1 ]]; then
+    echo "When you want the new code:"
+    echo "  sudo systemctl restart hwsniff"
+  fi
 fi
 
-echo "Update complete. Config left at /etc/hwsniff/config.json"
+echo
+echo "Update complete."
+echo "  config:  /etc/hwsniff/config.json  (untouched)"
+echo "  unit:    /etc/systemd/system/hwsniff.service  (untouched unless --update-unit)"
+echo "  wrapper: ${PREFIX}/scripts/start-hwsniff-appliance.sh"

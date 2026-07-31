@@ -39,18 +39,28 @@ Reboot is **not** automatic; confirm manually if display overlays changed:
 sudo reboot
 ```
 
-## Update after git pull (lightweight)
+## Safe update (recommended on Pi)
 
-`update.sh` only syncs code into `/opt/Sniff` and restarts the service.
-It does **not** run `apt-get`, recreate the `hwsniff` user, or change display config.
+Use the guardian — one command:
 
 ```bash
 cd /path/to/OpenVusion
-git pull
-sudo bash tools/HWSniff/update.sh
+sudo bash tools/HWSniff/safe-update.sh --restart
 ```
 
-Use `install.sh` again only when you need a full reinstall.
+Flow: snapshot protected files → `git pull --ff-only` → `update.sh --code-only`
+→ verify unit/config/wrapper → restore if anything drifted → optional restart.
+
+Protected paths:
+- `/etc/systemd/system/hwsniff.service`
+- `/etc/hwsniff/config.json`
+- `/etc/hwsniff/display.env` (if present)
+- `/opt/Sniff/scripts/start-hwsniff-appliance.sh`
+
+**Do not** re-run `install.sh` for code updates. Never pass `--update-unit`
+or `--force-unit` on a working Waveshare appliance.
+
+Lower-level (no git pull): `sudo bash tools/HWSniff/update.sh --code-only`
 
 ## Paths
 

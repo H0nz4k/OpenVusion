@@ -8,7 +8,7 @@ from typing import Any, Callable
 from .collector_service import CollectorService
 from .configuration import load_config
 from .logging_setup import log_event, setup_logging
-from .models import FIELD_ACTIVE_STATES, SWEETP_STATES, AppState
+from .models import SWEETP_STATES, AppState
 from .reader_detection import scan_readers
 from .state import AppStateMachine
 from .storage import prepare_storage, storage_status
@@ -153,6 +153,19 @@ class HWSniffApp:
             capture_step=1,
             capture_step_total=6,
             capture_step_label="WAITING",
+        )
+
+    def _set_waiting_for_removal(self, *, uid: str | None = None) -> None:
+        snap = self.state.get()
+        self.state.set_state(
+            AppState.WAITING_FOR_REMOVAL,
+            message="Oddalte štítek",
+            progress="Čekám na oddálení…",
+            banner=None,
+            last_uid=uid or snap.last_uid,
+            capture_step=6,
+            capture_step_total=6,
+            capture_step_label="REMOVE",
         )
 
     def _set_capture_step(
@@ -371,8 +384,18 @@ class HWSniffApp:
         elif name in ("sweetp_checking", "sweetp_attempt", "sweetp_result"):
             pass
         elif name in ("collector_started", "loop_started"):
-            if self.collector.running and self.state.get().state in FIELD_ACTIVE_STATES:
+            # Only reinforce waiting from STARTING. Never clobber TAG_DETECTED /
+            # reading / success — a late start event used to reset the UI to
+            # "Přiložte štítek" while a present tag was already being captured.
+            if self.state.get().state == AppState.STARTING:
                 self._set_waiting_for_tag()
+        elif name == "waiting_for_removal":
+            self._set_waiting_for_removal(uid=payload.get("uid"))
+            log_event(self.logger, "waiting_for_removal", **payload)
+        elif name == "tag_removed":
+            if self.collector.running:
+                self._set_waiting_for_tag()
+            log_event(self.logger, "tag_removed", **payload)
         elif name == "duplicate_skipped":
             self._set_capture_step(
                 AppState.WARNING,
@@ -507,7 +530,26 @@ class HWSniffApp:
             self._banner_until = 0.0
             if self.collector.running:
                 self.state.update(banner=None)
-                self._set_waiting_for_tag()
+                snap = self.state.get()
+                # After a capture with the tag still on the reader the collector
+                # waits for removal — keep that message, do not ask to present.
+                if snap.state in (
+                    AppState.SUCCESS,
+                    AppState.WARNING,
+                    AppState.FAILURE,
+                    AppState.WAITING_FOR_REMOVAL,
+                ):
+                    self._set_waiting_for_removal(uid=snap.last_uid)
+                elif snap.state not in (
+                    AppState.TAG_DETECTED,
+                    AppState.READING_IDENTIFICATION,
+                    AppState.READING_EEPROM,
+                    AppState.READING_APPLICATION,
+                    AppState.READING_SESSION,
+                    AppState.VERIFYING,
+                    AppState.SAVING,
+                ):
+                    self._set_waiting_for_tag()
             elif self.state.get().state not in SWEETP_STATES:
                 self.state.update(banner=None)
 

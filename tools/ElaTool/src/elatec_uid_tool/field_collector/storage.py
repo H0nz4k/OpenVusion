@@ -4,6 +4,7 @@ import csv
 import hashlib
 import json
 import os
+import tarfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -116,3 +117,62 @@ def verify_artifacts(directory: Path, required: list[str]) -> dict[str, str]:
     # Confirm hashes file itself
     _ = sha256_file(directory / "hashes.json")
     return hashes
+
+
+def export_bundle_stamp(when: datetime | None = None) -> str:
+    """Archive stamp: DDMMYYYY_HH_MM (e.g. 31072026_05_15)."""
+    now = when or datetime.now()
+    return now.strftime("%d%m%Y_%H_%M")
+
+
+def resolve_export_tar_path(
+    export_root: Path,
+    *,
+    when: datetime | None = None,
+) -> Path:
+    """Return /home/sniffer/capture/DDMMYYYY_HH_MM.tar (unique within the minute)."""
+    root = Path(export_root)
+    root.mkdir(parents=True, exist_ok=True)
+    stamp = export_bundle_stamp(when)
+    tar_path = root / f"{stamp}.tar"
+    suffix = 1
+    while tar_path.exists():
+        tar_path = root / f"{stamp}_{suffix}.tar"
+        suffix += 1
+    return tar_path
+
+
+def pack_capture_export(
+    capture_directory: Path,
+    *,
+    export_root: Path | None = None,
+    when: datetime | None = None,
+    tar_path: Path | None = None,
+) -> Path:
+    """Pack every capture file into export_root/DDMMYYYY_HH_MM.tar."""
+    capture_directory = Path(capture_directory)
+    if not capture_directory.is_dir():
+        raise FileNotFoundError(f"Capture directory missing: {capture_directory}")
+
+    if tar_path is None:
+        if export_root is None:
+            raise ValueError("export_root or tar_path is required")
+        tar_path = resolve_export_tar_path(export_root, when=when)
+    else:
+        tar_path = Path(tar_path)
+        tar_path.parent.mkdir(parents=True, exist_ok=True)
+
+    files = sorted(
+        path for path in capture_directory.rglob("*") if path.is_file()
+    )
+    if not files:
+        raise FileNotFoundError(f"No files to pack in {capture_directory}")
+
+    # Uncompressed .tar as requested (portable, easy to inspect on the Pi).
+    with tarfile.open(tar_path, mode="w") as archive:
+        for path in files:
+            archive.add(path, arcname=path.name)
+
+    with tar_path.open("rb") as handle:
+        handle.read(1)
+    return tar_path
