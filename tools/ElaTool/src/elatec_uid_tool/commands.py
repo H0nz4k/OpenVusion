@@ -7,8 +7,17 @@ from . import trigger_commands as trigger
 command_analyze = analysis.command_analyze
 command_analyze_application_block = application_block.command_analyze_application_block
 command_application_block = application_block.command_application_block
+command_application_study_plan = application_block.command_application_study_plan
+command_build_application_dataset = application_block.command_build_application_dataset
 command_capture = analysis.command_capture
+command_capture_application_block = application_block.command_capture_application_block
 command_compare_application_blocks = application_block.command_compare_application_blocks
+command_compare_application_captures = (
+    application_block.command_compare_application_captures
+)
+command_compare_application_dataset = (
+    application_block.command_compare_application_dataset
+)
 command_interactive = analysis.command_interactive
 command_logic_analyzer = logic_analyzer.command_logic_analyzer
 command_prepare_reader = reader.command_prepare_reader

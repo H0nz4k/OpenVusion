@@ -8,8 +8,13 @@ from .commands import (
     command_analyze,
     command_analyze_application_block,
     command_application_block,
+    command_application_study_plan,
+    command_build_application_dataset,
     command_capture,
+    command_capture_application_block,
     command_compare_application_blocks,
+    command_compare_application_captures,
+    command_compare_application_dataset,
     command_interactive,
     command_logic_analyzer,
     command_prepare_reader,
@@ -189,6 +194,78 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("dumps", nargs="+", help="Dva nebo více JSON/BIN dumpů")
     p.add_argument("--output", default=None)
     p.set_defaults(func=command_compare_application_blocks)
+
+    p = sub.add_parser(
+        "capture-application-block",
+        help="Repeated read-only capture of EEPROM application block 0x30–0x37",
+    )
+    p.add_argument("--port", default="auto")
+    p.add_argument("--label", required=True, help="Experiment label")
+    p.add_argument("--state", default="unspecified", help="Experimental state id")
+    p.add_argument("--notes", default="")
+    p.add_argument("--output-dir", default="captures/application-block")
+    p.add_argument("--samples", type=int, default=3)
+    p.add_argument("--interval-ms", type=float, default=250.0)
+    p.add_argument("--include-full-dump", action="store_true")
+    p.add_argument("--verbose", action="store_true")
+    p.add_argument("--timeout", type=float, default=2.0)
+    p.add_argument("--wait", type=float, default=15.0)
+    p.set_defaults(func=command_capture_application_block)
+
+    p = sub.add_parser(
+        "build-application-dataset",
+        help="Build manifest/dataset from application-block capture directories",
+    )
+    p.add_argument("input_dir", help="Capture root or single capture directory")
+    p.add_argument(
+        "--output",
+        required=True,
+        help="Output dataset directory",
+    )
+    p.add_argument(
+        "--representative-only",
+        action="store_true",
+        help="Include one representative block per capture",
+    )
+    p.add_argument("--uid", default=None)
+    p.add_argument("--state", default=None)
+    p.add_argument("--label", default=None)
+    p.set_defaults(func=command_build_application_dataset)
+
+    p = sub.add_parser(
+        "compare-application-captures",
+        help="Compare capture directories (intra-tag or inter-tag)",
+    )
+    p.add_argument("captures", nargs="+", help="Two or more capture directories")
+    p.add_argument(
+        "--mode",
+        choices=("intra-tag", "inter-tag"),
+        default="intra-tag",
+    )
+    p.add_argument("--output", default=None)
+    p.set_defaults(func=command_compare_application_captures)
+
+    p = sub.add_parser(
+        "compare-application-dataset",
+        help="Compare samples from an application-block dataset",
+    )
+    p.add_argument("dataset", help="Dataset directory with manifest.json")
+    p.add_argument(
+        "--mode",
+        choices=("intra-tag", "inter-tag"),
+        default="inter-tag",
+    )
+    p.add_argument("--output", default=None)
+    p.set_defaults(func=command_compare_application_dataset)
+
+    p = sub.add_parser(
+        "application-study-plan",
+        help="Write a manual read-only study plan (no RF writes)",
+    )
+    p.add_argument("--name", required=True)
+    p.add_argument("--output", required=True)
+    p.add_argument("--port", default="COM6")
+    p.set_defaults(func=command_application_study_plan)
     return parser
 
 
