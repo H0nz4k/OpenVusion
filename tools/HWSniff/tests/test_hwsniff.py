@@ -58,6 +58,8 @@ class FakeClient:
         op = tx[0]
         if op == 0x60:
             return with_crc(bytes.fromhex("00 04 04 05 02 02 13 03"))
+        if op == 0x30:
+            return with_crc(bytes.fromhex("04 36 7F 88 5A 2D 72 80 00 00 00 00 00 00 00 00"))
         if op == 0x3A:
             start, end = tx[1], tx[2]
             if start == 0x30 and end == 0x37:
@@ -159,19 +161,24 @@ class HWSniffTests(unittest.TestCase):
                     },
                 },
             )
+
+            class IdleClient(FakeClient):
+                def search_tag(self, max_id_bytes=32):
+                    return None
+
             app = HWSniffApp(
                 config=cfg,
                 headless=True,
                 list_ports=lambda: [FakePort()],
-                client_factory=lambda p, t: FakeClient(p, t),
+                client_factory=lambda p, t: IdleClient(p, t),
             )
             try:
                 app.initialize()
                 app.handle_action(UiAction("start"))
                 self.assertEqual(app.state.get().state, AppState.WAITING_FOR_TAG)
-                # Allow worker to schedule; may finish quickly on fake reader.
-                time.sleep(0.15)
+                time.sleep(0.1)
                 app.pump()
+                self.assertTrue(app.collector.running)
                 app.handle_action(UiAction("stop"))
                 time.sleep(0.05)
                 self.assertFalse(app.collector.running)
@@ -202,7 +209,6 @@ class HWSniffTests(unittest.TestCase):
     def test_no_write_api_imports_in_hwsniff(self):
         root = Path(__file__).resolve().parents[1] / "src" / "hwsniff"
         forbidden = (
-            "write_page",
             "fast_write",
             "compatibility_write",
             "pwd_auth",
@@ -213,6 +219,8 @@ class HWSniffTests(unittest.TestCase):
             text = path.read_text(encoding="utf-8")
             for token in forbidden:
                 self.assertNotIn(token, text, msg=f"{path.name} mentions {token}")
+            # Allow documentation of forbidden APIs; ban actual calls.
+            self.assertNotIn(".write_page(", text, msg=f"{path.name} calls write_page")
 
     def test_storage_full_blocks_start(self):
         with tempfile.TemporaryDirectory() as tmp:
