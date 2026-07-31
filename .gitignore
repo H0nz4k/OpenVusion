@@ -8,7 +8,11 @@ Thumbs.db
 # Velké nebo citlivé pracovní výstupy
 captures/**/working/
 references/elatec/extracted-temp/
-
+temp/
 # IDE
 .vscode/
 .idea/
+
+__pycache__/
+*.py[cod]
+
