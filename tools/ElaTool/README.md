@@ -26,7 +26,10 @@ pro analýzu štítků **SES-imagotag VUSION 2.6 BWR GU140** s čipem
 - **NFC Logic Analyzer** — výchozí bezpečný session-only režim;
 - experimentální (neověřený) pokus o RF čtení SRAM, vypnutý ve výchozím stavu;
 - **Trigger Analysis** — asociace RF operací s přechody session registrů;
-- **Application Block Analysis / Study** — pasivní rozbor a dataset EEPROM `0x30`–`0x37`.
+- **Application Block Analysis / Study** — pasivní rozbor a dataset EEPROM `0x30`–`0x37`;
+- **Field Collector API** (`elatec_uid_tool.field_collector`) — importovatelný
+  read-only sběr pro terénní appliance **HWSniff** (autodetekce TWN4,
+  continuous capture, index + SHA-256, bez CLI subprocess).
 
 ## Potvrzený testovaný tag
 
