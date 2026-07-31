@@ -18,15 +18,22 @@ BOOTING → INITIALIZING → READER_SEARCH → READY | READER_MISSING
 READY → STARTING → WAITING_FOR_TAG → TAG_DETECTED → reading phases →  
 VERIFYING → SAVING → SUCCESS | FAILURE → WAITING_FOR_REMOVAL → WAITING_FOR_TAG  
 STOP → STOPPING → READY  
+READY → SWEETP_STARTING → SWEETP_WAITING_FOR_TAG → SWEETP_CHECKING →  
+SWEETP_GOOD_POSITION | SWEETP_UNSTABLE_POSITION → (tag remove) WAITING → …  
+HOTOVO / ZRUŠIT → READY  
 STORAGE_ERROR / FATAL_ERROR as terminal-ish gates
 
 ## Touch actions
 
 | State | Actions |
 |---|---|
-| READY | START, optional SHUTDOWN |
+| READY | SWEETP, START, optional SHUTDOWN |
 | READER_MISSING | RETRY |
 | WAITING_FOR_TAG / reading | STOP |
+| SWEETP waiting / checking | ZRUŠIT |
+| SWEETP POSITION OK | HOTOVO |
+| SWEETP unstable / reader error | ZRUŠIT, ZNOVU |
 | SHUTDOWN confirm | ZRUŠIT / VYPNOUT |
 
-No keyboard required. Technical tracebacks never shown on the main screen.
+SweetP and field START are mutually exclusive. No keyboard required.
+Technical tracebacks never shown on the main screen.

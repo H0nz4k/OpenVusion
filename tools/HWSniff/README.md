@@ -21,10 +21,13 @@ READY                          SNIFFING ACTIVE
 │ OpenVusion HWSniff │         │ SNIFFING ACTIVE    │
 │ READER READY       │         │ Přiložte štítek    │
 │ Storage: 24.3 GB   │         │ Last UID: …        │
-│      [ START ]     │         │ OK: n  Errors: m   │
+│ [ SWEETP ][ START ]│         │ OK: n  Errors: m   │
 │ Status: READY      │         │     [ STOP ]       │
 └────────────────────┘         └────────────────────┘
 ```
+
+**SWEETP** — read-only position guide (stability probe, no capture dataset).
+See [docs/SWEETP.md](docs/SWEETP.md).
 
 ## Quick install (on Pi)
 
@@ -57,6 +60,7 @@ sudo /opt/Sniff/scripts/export-data.sh /media/usb
 - [docs/READER_AUTODETECTION.md](docs/READER_AUTODETECTION.md)
 - [docs/STORAGE_FORMAT.md](docs/STORAGE_FORMAT.md)
 - [docs/FIELD_WORKFLOW.md](docs/FIELD_WORKFLOW.md)
+- [docs/SWEETP.md](docs/SWEETP.md)
 
 ## Development tests (PC)
 

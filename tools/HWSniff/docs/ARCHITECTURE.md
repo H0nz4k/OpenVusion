@@ -9,17 +9,20 @@ using one ELATEC TWN4 reader on Raspberry Pi OS.
 ┌─────────────────────────────────────────┐
 │  HWSniff UI (pygame fullscreen)         │  state machine, touch
 ├─────────────────────────────────────────┤
-│  HWSniff orchestration                  │  START/STOP, storage gates
+│  HWSniff orchestration                  │  START/STOP, SweetP, storage
+├─────────────────────────────────────────┤
+│  SweetPService (position probe)         │  RO stability, no captures
+│  CollectorService (field capture)       │  continuous field collection
 ├─────────────────────────────────────────┤
 │  elatec_uid_tool.field_collector        │  capture, index, SHA-256
-├─────────────────────────────────────────┤
 │  elatec_uid_tool protocol / ntag        │  SearchTag, GET_VERSION,
 │                                         │  READ/FAST_READ (RO)
 └─────────────────────────────────────────┘
 ```
 
 HWSniff **does not** reimplement TWN4 protocol, CRC, EEPROM reads, or
-manifest logic. It imports ElaTool’s Field Collector API.
+manifest logic. Field capture imports ElaTool’s Field Collector API; SweetP
+uses the same read-only `NtagI2CPlus` helpers without writing capture packages.
 
 ## Target paths (Raspberry Pi)
 
