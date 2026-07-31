@@ -68,6 +68,8 @@ class FieldCaptureResult:
     errors: list[str] = field(default_factory=list)
     duplicate: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+    # ok | error | skipped | pending — filled by one-shot / continuous capture.
+    phase_status: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -91,6 +93,11 @@ class CollectorConfig:
     include_full_dump: bool = False
     # After each one-tag sniff, pack all artifacts as DDMMYYYY_HH_MM.tar here.
     export_bundle_root: str | None = "/home/sniffer/capture"
+    # One-shot retry / timeout controls (used by capture_one / run_once).
+    phase_retry_count: int = 3
+    phase_retry_delay_ms: float = 100.0
+    tag_acquire_timeout_seconds: float = 30.0
+    capture_timeout_seconds: float = 120.0
     label: str = "field"
     state: str = "field"
     notes: str = ""

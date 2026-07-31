@@ -8,7 +8,7 @@ from typing import Any, Callable
 from .collector_service import CollectorService
 from .configuration import load_config
 from .logging_setup import log_event, setup_logging
-from .models import SWEETP_STATES, AppState
+from .models import FIELD_CAPTURE_STATES, FIELD_RESULT_STATES, SWEETP_STATES, AppState
 from .reader_detection import scan_readers
 from .state import AppStateMachine
 from .storage import prepare_storage, storage_status
@@ -115,6 +115,9 @@ class HWSniffApp:
         )
 
     def start_collection(self) -> None:
+        # START = exactly one capture. Ignore while a capture thread is alive.
+        if self.collector.running:
+            return
         if self.sweetp.running or self.state.get().state in SWEETP_STATES:
             return
         self.refresh_reader()
@@ -131,18 +134,29 @@ class HWSniffApp:
         if not ok:
             self.state.set_state(AppState.STORAGE_ERROR, storage_text=text)
             return
+        self._banner_until = 0.0
         self.state.set_state(
             AppState.STARTING,
             message="SNIFFING…",
             progress="Spouštím sběr…",
             banner=None,
             capture_step=0,
-            capture_step_total=6,
+            capture_step_total=7,
             capture_step_label="STARTING",
+            capture_directory="",
+            capture_export_bundle="",
+            capture_outcome="",
+            capture_phase_errors=0,
+            phase_identification="",
+            phase_eeprom="",
+            phase_application="",
+            phase_session="",
+            phase_verify="",
+            phase_save="",
         )
         self.collector.start(self._selected_port, self.config)
         self._set_waiting_for_tag()
-        log_event(self.logger, "start", port=self._selected_port)
+        log_event(self.logger, "start", port=self._selected_port, mode="oneshot")
 
     def _set_waiting_for_tag(self) -> None:
         self.state.set_state(
@@ -151,21 +165,8 @@ class HWSniffApp:
             progress="Přiložte štítek",
             banner=None,
             capture_step=1,
-            capture_step_total=6,
+            capture_step_total=7,
             capture_step_label="WAITING",
-        )
-
-    def _set_waiting_for_removal(self, *, uid: str | None = None) -> None:
-        snap = self.state.get()
-        self.state.set_state(
-            AppState.WAITING_FOR_REMOVAL,
-            message="Oddalte štítek",
-            progress="Čekám na oddálení…",
-            banner=None,
-            last_uid=uid or snap.last_uid,
-            capture_step=6,
-            capture_step_total=6,
-            capture_step_label="REMOVE",
         )
 
     def _set_capture_step(
@@ -181,13 +182,74 @@ class HWSniffApp:
         kwargs: dict[str, Any] = {
             "progress": progress,
             "capture_step": step,
-            "capture_step_total": 6,
+            "capture_step_total": 7,
             "capture_step_label": label,
         }
         if message is not None:
             kwargs["message"] = message
         kwargs.update(extra)
         self.state.set_state(state, **kwargs)
+
+    def _apply_phase_status(self, phase_status: dict[str, Any]) -> dict[str, str]:
+        mapping = {
+            "identification": "phase_identification",
+            "eeprom": "phase_eeprom",
+            "application": "phase_application",
+            "session": "phase_session",
+            "verify": "phase_verify",
+            "save": "phase_save",
+        }
+        updates: dict[str, str] = {}
+        for key, attr in mapping.items():
+            value = str(phase_status.get(key) or "")
+            updates[attr] = value
+        return updates
+
+    def _show_capture_result(self, payload: dict[str, Any]) -> None:
+        phase_status = payload.get("phase_status") or {}
+        phase_updates = self._apply_phase_status(phase_status)
+        errors = list(payload.get("errors") or [])
+        outcome = str(payload.get("outcome") or "")
+        uid = payload.get("uid") or self.state.get().last_uid
+        directory = str(payload.get("directory") or "")
+        export_bundle = str(payload.get("export_bundle") or "")
+        snap = self.state.get()
+
+        if outcome == "ok":
+            state = AppState.SUCCESS
+            message = "HOTOVO"
+            banner = "ok"
+            self.state.update(ok_count=snap.ok_count + 1)
+        elif outcome in ("with_errors", "duplicate"):
+            state = AppState.WARNING
+            message = "HOTOVO S CHYBAMI"
+            banner = "error"
+            if outcome == "duplicate" and not errors:
+                errors = ["Štítek už je v indexu"]
+            self.state.update(error_count=snap.error_count + 1)
+        else:
+            state = AppState.FAILURE
+            message = "SELHALO"
+            banner = "error"
+            self.state.update(error_count=snap.error_count + 1)
+
+        summary = "; ".join(errors) if errors else "Všechny fáze OK"
+        self._banner_until = 0.0
+        self.state.set_state(
+            state,
+            message=message,
+            progress=summary[:40],
+            banner=banner,
+            last_uid=uid or "—",
+            capture_step=7,
+            capture_step_total=7,
+            capture_step_label="DONE",
+            capture_directory=directory,
+            capture_export_bundle=export_bundle,
+            capture_outcome=outcome or ("ok" if state == AppState.SUCCESS else "failed"),
+            capture_phase_errors=len(errors),
+            **phase_updates,
+        )
 
     def _apply_sweetp_live(self, payload: dict[str, Any]) -> None:
         quality = float(payload.get("current_quality") or 0.0)
@@ -299,8 +361,51 @@ class HWSniffApp:
         name = action.name
         if name == "start":
             self.start_collection()
+        elif name == "new_tag":
+            if self.state.get().state in FIELD_RESULT_STATES:
+                self.start_collection()
+        elif name == "detail":
+            if self.state.get().state in (
+                AppState.SUCCESS,
+                AppState.WARNING,
+                AppState.FAILURE,
+            ):
+                snap = self.state.get()
+                self.state.set_state(
+                    AppState.CAPTURE_DETAIL,
+                    message="DETAIL ZÁZNAMU",
+                    progress=snap.capture_directory[:40] if snap.capture_directory else "",
+                    banner=snap.banner,
+                )
+        elif name == "back":
+            if self.state.get().state == AppState.CAPTURE_DETAIL:
+                outcome = self.state.get().capture_outcome
+                if outcome == "ok":
+                    target = AppState.SUCCESS
+                    message = "HOTOVO"
+                elif outcome in ("with_errors", "duplicate"):
+                    target = AppState.WARNING
+                    message = "HOTOVO S CHYBAMI"
+                else:
+                    target = AppState.FAILURE
+                    message = "SELHALO"
+                snap = self.state.get()
+                self.state.set_state(
+                    target,
+                    message=message,
+                    progress=snap.progress,
+                    banner=snap.banner,
+                )
+            elif self.state.get().state in FIELD_RESULT_STATES:
+                self.state.set_state(
+                    AppState.READY if self._selected_port else AppState.READER_MISSING,
+                    banner=None,
+                    progress="",
+                    message="READY",
+                )
         elif name == "stop":
-            self.stop_collection()
+            if self.state.get().state in FIELD_CAPTURE_STATES:
+                self.stop_collection()
         elif name == "sweetp":
             self.start_sweetp()
         elif name == "sweetp_cancel":
@@ -332,6 +437,8 @@ class HWSniffApp:
                 )
         elif name == "shutdown":
             if self.sweetp.running or self.collector.running:
+                return
+            if self.state.get().state in FIELD_RESULT_STATES:
                 return
             self.state.set_state(AppState.SHUTDOWN_CONFIRM)
         elif name == "shutdown_cancel":
@@ -384,154 +491,115 @@ class HWSniffApp:
         elif name in ("sweetp_checking", "sweetp_attempt", "sweetp_result"):
             pass
         elif name in ("collector_started", "loop_started"):
-            # Only reinforce waiting from STARTING. Never clobber TAG_DETECTED /
-            # reading / success — a late start event used to reset the UI to
-            # "Přiložte štítek" while a present tag was already being captured.
             if self.state.get().state == AppState.STARTING:
                 self._set_waiting_for_tag()
-        elif name == "waiting_for_removal":
-            self._set_waiting_for_removal(uid=payload.get("uid"))
-            log_event(self.logger, "waiting_for_removal", **payload)
-        elif name == "tag_removed":
-            # Clear sticky error/removal UI so the next present can proceed.
-            self._banner_until = 0.0
-            if self.collector.running:
-                self._set_waiting_for_tag()
-            log_event(self.logger, "tag_removed", **payload)
+        elif name in ("waiting_for_removal", "tag_removed"):
+            # One-shot START does not auto-chain to the next tag.
+            log_event(self.logger, name, **payload)
         elif name == "duplicate_skipped":
-            self._set_capture_step(
-                AppState.WARNING,
-                step=6,
-                label="DUPLICATE",
-                progress="Štítek už je v indexu — oddalte",
-                message="DUPLICATE",
-                last_uid=payload.get("uid") or self.state.get().last_uid,
-                banner="error",
-            )
-            self._banner_until = time.monotonic() + float(
-                (self.config.get("ui") or {}).get("error_display_seconds", 3.0)
-            )
+            # Final outcome still arrives via capture_result.
             log_event(self.logger, "duplicate_skipped", **payload)
         elif name == "tag_detected":
             self._set_capture_step(
                 AppState.TAG_DETECTED,
                 step=2,
                 label="IDENTIFICATION",
-                progress="TAG DETECTED — čtu…",
-                message="TAG DETECTED",
+                progress="ČTU IDENTIFIKACI",
+                message="ČTU IDENTIFIKACI",
                 last_uid=payload.get("uid") or "—",
             )
         elif name == "phase_identification":
-            detail = payload.get("message") or "IDENTIFICATION"
             self._set_capture_step(
                 AppState.READING_IDENTIFICATION,
                 step=2,
                 label="IDENTIFICATION",
-                progress=str(detail),
-                message="READING 1/5",
+                progress="ČTU IDENTIFIKACI",
+                message="ČTU IDENTIFIKACI",
             )
         elif name == "phase_eeprom":
             self._set_capture_step(
                 AppState.READING_EEPROM,
                 step=3,
                 label="EEPROM",
-                progress=payload.get("message") or "EEPROM",
-                message="READING 2/5",
+                progress="ČTU EEPROM",
+                message="ČTU EEPROM",
             )
         elif name == "phase_application":
             sample = payload.get("sample_index")
             total = payload.get("sample_total")
-            if sample and total:
-                detail = f"APPLICATION {sample}/{total}"
-            else:
-                detail = payload.get("message") or "APPLICATION BLOCK"
+            detail = (
+                f"ČTU APPLICATION BLOCK {sample}/{total}"
+                if sample and total
+                else "ČTU APPLICATION BLOCK"
+            )
             self._set_capture_step(
                 AppState.READING_APPLICATION,
-                step=3,
+                step=4,
                 label="APPLICATION",
-                progress=str(detail),
-                message="READING 2/5",
+                progress=detail,
+                message="ČTU APPLICATION BLOCK",
             )
         elif name == "phase_session":
             self._set_capture_step(
                 AppState.READING_SESSION,
-                step=4,
+                step=5,
                 label="SESSION",
-                progress=payload.get("message") or "SESSION",
-                message="READING 3/5",
+                progress="MĚŘÍM SESSION",
+                message="MĚŘÍM SESSION",
             )
         elif name == "phase_verifying":
             self._set_capture_step(
                 AppState.VERIFYING,
-                step=5,
+                step=6,
                 label="VERIFYING",
-                progress="VERIFYING",
-                message="READING 4/5",
+                progress="OVĚŘUJI",
+                message="OVĚŘUJI",
             )
         elif name == "phase_saving":
+            detail = payload.get("message") or "UKLÁDÁM"
+            if "EXPORT" in str(detail).upper():
+                progress_txt = "UKLÁDÁM (TAR)"
+            else:
+                progress_txt = "UKLÁDÁM"
             self._set_capture_step(
                 AppState.SAVING,
-                step=6,
+                step=7,
                 label="SAVING",
-                progress="SAVING",
-                message="READING 5/5",
+                progress=progress_txt,
+                message="UKLÁDÁM",
             )
         elif name == "capture_result":
-            snap = self.state.get()
-            if payload.get("ok"):
-                self.state.update(
-                    ok_count=snap.ok_count + 1,
-                    last_uid=payload.get("uid") or snap.last_uid,
-                    banner="ok",
-                )
-                self._set_capture_step(
-                    AppState.SUCCESS,
-                    step=6,
-                    label="DONE",
-                    progress="Oddalte štítek",
-                    message=f"CAPTURE OK  {payload.get('uid') or ''}",
-                )
-                self._banner_until = time.monotonic() + float(
-                    (self.config.get("ui") or {}).get("success_display_seconds", 1.5)
-                )
-            else:
-                self.state.update(error_count=snap.error_count + 1, banner="error")
-                err = "; ".join(payload.get("errors") or ["unknown"])
-                self._set_capture_step(
-                    AppState.FAILURE,
-                    step=6,
-                    label="ERROR",
-                    progress=err[:40],
-                    message="CAPTURE INCOMPLETE",
-                )
-                self._banner_until = time.monotonic() + float(
-                    (self.config.get("ui") or {}).get("error_display_seconds", 3.0)
-                )
+            self._show_capture_result(payload)
             log_event(self.logger, "capture_result", **payload)
+        elif name == "collector_finished":
+            # Worker ended; keep result screen if already shown.
+            if self.state.get().state in FIELD_CAPTURE_STATES:
+                # Aborted/stopped without capture_result.
+                if self.state.get().state == AppState.STOPPING:
+                    self.state.set_state(
+                        AppState.READY if self._selected_port else AppState.READER_MISSING
+                    )
+            log_event(self.logger, "collector_finished", **payload)
         elif name == "loop_error":
-            # Transient serial glitch during a running session — stay collecting.
-            # Do not freeze the UI on READER_DISCONNECTED / Oddalte.
-            self._banner_until = 0.0
-            if self.collector.running:
-                self.state.update(banner="error", progress=str(payload.get("error") or "")[:40])
-                self._set_waiting_for_tag()
-            else:
-                self.state.set_state(
-                    AppState.READER_DISCONNECTED,
-                    message="READER DISCONNECTED",
-                    banner="error",
-                )
             log_event(self.logger, name, **payload)
         elif name == "collector_fatal":
             self.state.set_state(
-                AppState.READER_DISCONNECTED,
-                message="READER DISCONNECTED",
+                AppState.FAILURE,
+                message="SELHALO",
+                progress=str(payload.get("error") or "READER ERROR")[:40],
                 banner="error",
+                capture_outcome="failed",
+                capture_step=7,
+                capture_step_total=7,
+                capture_step_label="DONE",
             )
+            self.state.update(error_count=self.state.get().error_count + 1)
             log_event(self.logger, name, **payload)
         elif name == "collector_stopped":
             if self.state.get().state == AppState.STOPPING:
-                self.state.set_state(AppState.READY)
+                self.state.set_state(
+                    AppState.READY if self._selected_port else AppState.READER_MISSING
+                )
 
     def pump(self) -> None:
         # Bound work per frame so a busy collector cannot stall the UI thread.
@@ -542,31 +610,10 @@ class HWSniffApp:
                 break
             self.handle_event(event.name, event.payload)
 
+        # One-shot: never auto-advance from result to "next tag".
         if self._banner_until and time.monotonic() >= self._banner_until:
             self._banner_until = 0.0
-            if self.collector.running:
-                self.state.update(banner=None)
-                snap = self.state.get()
-                # After a capture with the tag still on the reader the collector
-                # waits for removal — keep that message, do not ask to present.
-                if snap.state in (
-                    AppState.SUCCESS,
-                    AppState.WARNING,
-                    AppState.FAILURE,
-                    AppState.WAITING_FOR_REMOVAL,
-                ):
-                    self._set_waiting_for_removal(uid=snap.last_uid)
-                elif snap.state not in (
-                    AppState.TAG_DETECTED,
-                    AppState.READING_IDENTIFICATION,
-                    AppState.READING_EEPROM,
-                    AppState.READING_APPLICATION,
-                    AppState.READING_SESSION,
-                    AppState.VERIFYING,
-                    AppState.SAVING,
-                ):
-                    self._set_waiting_for_tag()
-            elif self.state.get().state not in SWEETP_STATES:
+            if self.state.get().state not in FIELD_RESULT_STATES | SWEETP_STATES:
                 self.state.update(banner=None)
 
         for action in self.ui.poll_actions():

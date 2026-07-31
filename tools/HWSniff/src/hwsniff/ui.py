@@ -5,7 +5,14 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from .models import FIELD_ACTIVE_STATES, SWEETP_STATES, AppState, UiSnapshot
+from .models import (
+    FIELD_ACTIVE_STATES,
+    FIELD_CAPTURE_STATES,
+    FIELD_RESULT_STATES,
+    SWEETP_STATES,
+    AppState,
+    UiSnapshot,
+)
 
 _LOG = logging.getLogger("hwsniff")
 
@@ -195,7 +202,14 @@ class TouchUI:
         elif state == AppState.SWEETP_READER_ERROR:
             button("ZRUŠIT", "sweetp_cancel", 40, (180, 40, 40), w=150)
             button("ZNOVU", "sweetp_retry", 250, (180, 120, 20), w=150)
-        elif state in FIELD_ACTIVE_STATES:
+        elif state in FIELD_RESULT_STATES and state != AppState.CAPTURE_DETAIL:
+            button("NOVÝ", "new_tag", 16, (20, 150, 60), w=120)
+            button("DETAIL", "detail", 160, (40, 120, 220), w=140)
+            button("ZPĚT", "back", 320, (80, 80, 80), w=120)
+        elif state == AppState.CAPTURE_DETAIL:
+            button("NOVÝ", "new_tag", 40, (20, 150, 60), w=150)
+            button("ZPĚT", "back", 260, (80, 80, 80), w=150)
+        elif state in FIELD_CAPTURE_STATES:
             button("STOP", "stop", self.width // 2 - 70, (180, 40, 40))
         elif state not in (
             AppState.BOOTING,
@@ -227,10 +241,26 @@ class TouchUI:
         text(title[:28], 8, big=True, color=(120, 220, 255))
         if snap.state == AppState.WAITING_FOR_TAG:
             text(f"Přiložte štítek{dots}", 52, big=True)
-            text("Sběr běží — čekám na tag", 96)
-        elif snap.state == AppState.WAITING_FOR_REMOVAL:
-            text(f"Oddalte štítek{dots}", 52, big=True)
-            text("Pak přiložte další", 96)
+            text("Jeden capture — nehýbejte štítkem", 96)
+        elif snap.state == AppState.CAPTURE_DETAIL:
+            text(f"UID: {snap.last_uid}", 48)
+            text(f"ID:{snap.phase_identification or '-'}  EE:{snap.phase_eeprom or '-'}", 78)
+            text(
+                f"APP:{snap.phase_application or '-'}  SES:{snap.phase_session or '-'}",
+                108,
+            )
+            text(f"VFY:{snap.phase_verify or '-'}  SAV:{snap.phase_save or '-'}", 138)
+            text(f"Chyby: {snap.capture_phase_errors}", 168)
+            path = snap.capture_export_bundle or snap.capture_directory or "—"
+            text(str(path)[:42], 198)
+        elif snap.state in FIELD_RESULT_STATES:
+            text(snap.message or "HOTOVO", 48, big=True)
+            text(f"UID: {snap.last_uid}", 90)
+            text(f"Chyby fází: {snap.capture_phase_errors}", 120)
+            path = snap.capture_export_bundle or snap.capture_directory or ""
+            if path:
+                text(str(path)[:42], 150)
+            text("NOVÝ ŠTÍTEK spustí další capture", 180, color=(180, 200, 220))
         else:
             text(snap.progress[:40] if snap.progress else snap.state.value, 52, big=True)
             if snap.capture_step_label:
@@ -239,12 +269,11 @@ class TouchUI:
                     96,
                     color=(200, 220, 255),
                 )
-        text(f"UID: {snap.last_uid}", 130)
-        text(f"OK: {snap.ok_count}    Errors: {snap.error_count}", 160)
-        step = snap.capture_step or 0
-        total = snap.capture_step_total or 6
-        text(f"Progres: {step}/{total}", 188)
-        self._draw_progress_bar(step, total, y=218)
+            text(f"UID: {snap.last_uid}", 130)
+            step = snap.capture_step or 0
+            total = snap.capture_step_total or 7
+            text(f"Progres: {step}/{total}", 160)
+            self._draw_progress_bar(step, total, y=190)
 
     def _draw_sweetp(self, snap: UiSnapshot, text) -> None:
         pg = self._pygame

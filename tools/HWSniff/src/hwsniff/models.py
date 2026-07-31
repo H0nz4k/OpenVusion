@@ -24,7 +24,8 @@ class AppState(str, Enum):
     SUCCESS = "SUCCESS"
     WARNING = "WARNING"
     FAILURE = "FAILURE"
-    WAITING_FOR_REMOVAL = "WAITING_FOR_REMOVAL"
+    CAPTURE_DETAIL = "CAPTURE_DETAIL"
+    WAITING_FOR_REMOVAL = "WAITING_FOR_REMOVAL"  # legacy; unused by one-shot START
     STOPPING = "STOPPING"
     STOPPED = "STOPPED"
     STORAGE_ERROR = "STORAGE_ERROR"
@@ -56,9 +57,10 @@ USER_TEXT = {
     AppState.READING_SESSION: "SESSION",
     AppState.VERIFYING: "VERIFYING",
     AppState.SAVING: "SAVING",
-    AppState.SUCCESS: "CAPTURE OK",
-    AppState.WARNING: "CAPTURE WARNING",
-    AppState.FAILURE: "CAPTURE INCOMPLETE",
+    AppState.SUCCESS: "HOTOVO",
+    AppState.WARNING: "HOTOVO S CHYBAMI",
+    AppState.FAILURE: "SELHALO",
+    AppState.CAPTURE_DETAIL: "DETAIL ZÁZNAMU",
     AppState.WAITING_FOR_REMOVAL: "Oddalte štítek",
     AppState.STOPPING: "Stopping…",
     AppState.STOPPED: "STOPPED",
@@ -85,7 +87,7 @@ SWEETP_STATES = {
     AppState.SWEETP_CANCELLED,
 }
 
-FIELD_ACTIVE_STATES = {
+FIELD_CAPTURE_STATES = {
     AppState.STARTING,
     AppState.WAITING_FOR_TAG,
     AppState.TAG_DETECTED,
@@ -95,11 +97,18 @@ FIELD_ACTIVE_STATES = {
     AppState.READING_SESSION,
     AppState.VERIFYING,
     AppState.SAVING,
+    AppState.STOPPING,
+}
+
+FIELD_RESULT_STATES = {
     AppState.SUCCESS,
     AppState.WARNING,
     AppState.FAILURE,
+    AppState.CAPTURE_DETAIL,
+}
+
+FIELD_ACTIVE_STATES = FIELD_CAPTURE_STATES | FIELD_RESULT_STATES | {
     AppState.WAITING_FOR_REMOVAL,
-    AppState.STOPPING,
 }
 
 
@@ -107,6 +116,7 @@ FIELD_ACTIVE_STATES = {
 CAPTURE_STEPS = (
     "WAITING",
     "IDENTIFICATION",
+    "EEPROM",
     "APPLICATION",
     "SESSION",
     "VERIFYING",
@@ -132,8 +142,18 @@ class UiSnapshot:
     sweetp_total: int = 0
     sweetp_successes: int = 0
     capture_step: int = 0
-    capture_step_total: int = 6
+    capture_step_total: int = 7
     capture_step_label: str = ""
+    capture_directory: str = ""
+    capture_export_bundle: str = ""
+    capture_outcome: str = ""  # ok | with_errors | failed | duplicate | aborted
+    capture_phase_errors: int = 0
+    phase_identification: str = ""
+    phase_eeprom: str = ""
+    phase_application: str = ""
+    phase_session: str = ""
+    phase_verify: str = ""
+    phase_save: str = ""
     # Live SweetP meter (communication quality, not RF RSSI).
     sweetp_current_quality: float = 0.0
     sweetp_best_quality: float = 0.0

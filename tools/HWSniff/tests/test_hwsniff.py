@@ -390,7 +390,7 @@ class HWSniffTests(unittest.TestCase):
                 app.handle_action(UiAction("start"))
                 deadline = time.time() + 2.0
                 left_waiting = False
-                saw_removal_or_ok = False
+                saw_result = False
                 while time.time() < deadline:
                     app.pump()
                     snap = app.state.get()
@@ -399,24 +399,26 @@ class HWSniffTests(unittest.TestCase):
                         AppState.WAITING_FOR_TAG,
                     ):
                         left_waiting = True
-                    if snap.state == AppState.WAITING_FOR_REMOVAL or snap.ok_count >= 1:
-                        saw_removal_or_ok = True
+                    if snap.state in (
+                        AppState.SUCCESS,
+                        AppState.WARNING,
+                        AppState.FAILURE,
+                    ) or snap.ok_count >= 1:
+                        saw_result = True
                         break
                     time.sleep(0.05)
                 self.assertTrue(left_waiting, "UI stayed on WAITING_FOR_TAG")
-                self.assertTrue(
-                    saw_removal_or_ok,
-                    "expected capture OK or WAITING_FOR_REMOVAL",
-                )
-                # Late start events must not clobber removal / success UI.
+                self.assertTrue(saw_result, "expected one-shot result screen")
+                self.assertFalse(app.collector.running)
+                # Late start events must not clobber result UI.
                 app.handle_event("collector_started", {"port": "/dev/ttyACM0"})
                 app.handle_event("loop_started", {"port": "/dev/ttyACM0"})
                 self.assertNotEqual(app.state.get().state, AppState.WAITING_FOR_TAG)
-                app.handle_action(UiAction("stop"))
             finally:
                 app.close()
 
-    def test_banner_timeout_keeps_removal_prompt(self):
+    def test_banner_timeout_keeps_result_screen(self):
+        """One-shot must not auto-advance from HOTOVO to next-tag waiting."""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cfg = deep_merge(
@@ -437,24 +439,22 @@ class HWSniffTests(unittest.TestCase):
             )
             try:
                 app.initialize()
-                # Simulate collector still running after a successful capture.
-                app.collector._thread = type(
-                    "T", (), {"is_alive": lambda self: True}
-                )()
                 app.state.set_state(
                     AppState.SUCCESS,
-                    message="CAPTURE OK",
-                    progress="Oddalte štítek",
+                    message="HOTOVO",
+                    progress="Všechny fáze OK",
                     last_uid="04367F5A2D7280",
                     banner="ok",
+                    capture_outcome="ok",
                 )
                 app._banner_until = time.monotonic() - 0.1
                 app.pump()
                 snap = app.state.get()
-                self.assertEqual(snap.state, AppState.WAITING_FOR_REMOVAL)
-                self.assertIn("Oddalte", snap.message)
+                self.assertEqual(snap.state, AppState.SUCCESS)
+                self.assertEqual(snap.message, "HOTOVO")
+                self.assertNotEqual(snap.state, AppState.WAITING_FOR_TAG)
+                self.assertNotEqual(snap.state, AppState.WAITING_FOR_REMOVAL)
             finally:
-                app.collector._thread = None
                 app.close()
 
 

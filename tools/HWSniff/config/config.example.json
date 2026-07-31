@@ -9,17 +9,21 @@
     "handshake_timeout_seconds": 2,
     "reconnect_delay_seconds": 2
   },
-    "collector": {
+  "collector": {
     "application_samples": 3,
     "full_dump_samples": 1,
     "session_duration_seconds": 1.0,
     "session_interval_ms": 50,
     "allow_duplicate": false,
-    "wait_for_removal": true,
+    "wait_for_removal": false,
     "minimum_free_space_mb": 1024,
     "include_session": true,
     "include_full_dump": true,
-    "export_bundle_root": "/home/sniffer/capture"
+    "export_bundle_root": "/home/sniffer/capture",
+    "phase_retry_count": 3,
+    "phase_retry_delay_ms": 100,
+    "tag_acquire_timeout_seconds": 30,
+    "capture_timeout_seconds": 120
   },
   "display": {
     "fullscreen": true,

@@ -87,7 +87,8 @@ class FieldCollector:
         on_progress: ProgressCallback | None = None,
         on_event: EventCallback | None = None,
     ) -> FieldCaptureResult:
-        """One-shot capture (opens its own serial session)."""
+        """One-shot capture of a single tag (opens its own serial session)."""
+        self.clear_stop()
         self._busy.set()
         try:
 
@@ -99,7 +100,11 @@ class FieldCollector:
             with self._client_factory(
                 port, self.config.handshake_timeout_seconds
             ) as client:
-                tag = self._wait_for_tag(client, on_event=on_event)
+                tag = self._wait_for_tag(
+                    client,
+                    on_event=on_event,
+                    timeout_seconds=float(self.config.tag_acquire_timeout_seconds),
+                )
                 if tag is None:
                     return FieldCaptureResult(
                         uid=None,
@@ -117,6 +122,18 @@ class FieldCollector:
                 )
         finally:
             self._busy.clear()
+
+    def run_once(
+        self,
+        port: str,
+        *,
+        on_progress: ProgressCallback | None = None,
+        on_event: EventCallback | None = None,
+    ) -> FieldCaptureResult:
+        """Public alias for a single-tag capture (HWSniff START workflow)."""
+        return self.capture_one(
+            port, on_progress=on_progress, on_event=on_event
+        )
 
     def run_continuous(
         self,
@@ -260,17 +277,50 @@ class FieldCollector:
             )
         return tag
 
+    def _retry_call(
+        self,
+        label: str,
+        func: Callable[[], Any],
+        *,
+        client: Any,
+        uid: str | None,
+    ) -> Any:
+        """Retry a phase op; keep the same tag selected (no next-tag switch)."""
+        attempts = max(1, int(self.config.phase_retry_count))
+        delay = max(0.0, float(self.config.phase_retry_delay_ms) / 1000.0)
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            if self._stop.is_set():
+                raise SerialCommunicationError(f"{label} aborted")
+            try:
+                if uid:
+                    self._ensure_selected(client, uid)
+                return func()
+            except (ElatecError, SerialCommunicationError, ValueError, OSError) as exc:
+                last_exc = exc
+                if attempt >= attempts:
+                    break
+                self._sleep(delay)
+        assert last_exc is not None
+        raise last_exc
+
     def _read_full_dump(self, client: Any, ntag: NtagI2CPlus, uid: str) -> bytes:
         chunks: list[bytes] = []
         page = FULL_DUMP_START_PAGE
         while page <= FULL_DUMP_END_PAGE:
             end = min(page + FULL_DUMP_CHUNK_PAGES - 1, FULL_DUMP_END_PAGE)
-            try:
-                chunks.append(ntag.read_eeprom_range(page, end))
-            except (ElatecError, SerialCommunicationError, ValueError):
-                # Long dumps often need a reselect mid-way on TWN4.
-                self._ensure_selected(client, uid)
-                chunks.append(ntag.read_eeprom_range(page, end))
+
+            def _chunk(start: int = page, stop: int = end) -> bytes:
+                return ntag.read_eeprom_range(start, stop)
+
+            chunks.append(
+                self._retry_call(
+                    f"EEPROM 0x{page:02X}-0x{end:02X}",
+                    _chunk,
+                    client=client,
+                    uid=uid,
+                )
+            )
             page = end + 1
         return b"".join(chunks)
 
@@ -289,6 +339,17 @@ class FieldCollector:
         app_hex: str | None = None
         directory: Path | None = None
         hashes: dict[str, str] = {}
+        phase_status: dict[str, str] = {
+            "identification": "pending",
+            "eeprom": "skipped",
+            "application": "pending",
+            "session": "skipped",
+            "verify": "pending",
+            "save": "pending",
+        }
+        capture_deadline = time.monotonic() + float(
+            self.config.capture_timeout_seconds
+        )
 
         def progress(phase: CapturePhase, **kwargs: Any) -> None:
             if on_progress:
@@ -297,6 +358,10 @@ class FieldCollector:
         def emit(name: str, **payload: Any) -> None:
             if on_event:
                 on_event(name, payload)
+
+        def check_capture_timeout() -> None:
+            if time.monotonic() > capture_deadline:
+                raise SerialCommunicationError("Capture timeout")
 
         try:
             progress(CapturePhase.IDENTIFICATION, message="SearchTag")
@@ -313,70 +378,100 @@ class FieldCollector:
                     directory=None,
                     finish_status=FinishStatus.DUPLICATE_SKIPPED,
                     duplicate=True,
+                    phase_status={
+                        "identification": "ok",
+                        "eeprom": "skipped",
+                        "application": "skipped",
+                        "session": "skipped",
+                        "verify": "skipped",
+                        "save": "skipped",
+                    },
                 )
 
             ntag = NtagI2CPlus(client)
-            # Reselect before RF reads — tag may already have been in the field.
-            self._ensure_selected(client, uid)
-
+            check_capture_timeout()
             progress(CapturePhase.IDENTIFICATION, message="GET_VERSION")
-            version = ntag.get_version()
-            get_version = version.raw.hex(" ").upper()
+            try:
+                version = self._retry_call(
+                    "GET_VERSION",
+                    ntag.get_version,
+                    client=client,
+                    uid=uid,
+                )
+                get_version = version.raw.hex(" ").upper()
+                phase_status["identification"] = "ok"
+            except (ElatecError, SerialCommunicationError, ValueError, OSError) as exc:
+                errors.append(f"identification failed: {exc}")
+                phase_status["identification"] = "error"
+                raise
 
             app_blocks: list[bytes] = []
             total = max(1, self.config.application_samples)
-            for index in range(1, total + 1):
-                progress(
-                    CapturePhase.APPLICATION_BLOCK,
-                    sample_index=index,
-                    sample_total=total,
-                    message=f"APPLICATION {index}/{total}",
-                )
-                try:
-                    block = ntag.read_eeprom_range(
-                        EEPROM_WATCH_START_PAGE,
-                        EEPROM_WATCH_END_PAGE,
+            try:
+                for index in range(1, total + 1):
+                    check_capture_timeout()
+                    progress(
+                        CapturePhase.APPLICATION_BLOCK,
+                        sample_index=index,
+                        sample_total=total,
+                        message=f"APPLICATION {index}/{total}",
                     )
-                except (ElatecError, SerialCommunicationError, ValueError):
-                    self._ensure_selected(client, uid)
-                    block = ntag.read_eeprom_range(
-                        EEPROM_WATCH_START_PAGE,
-                        EEPROM_WATCH_END_PAGE,
+                    block = self._retry_call(
+                        "APPLICATION",
+                        lambda: ntag.read_eeprom_range(
+                            EEPROM_WATCH_START_PAGE,
+                            EEPROM_WATCH_END_PAGE,
+                        ),
+                        client=client,
+                        uid=uid,
                     )
-                app_blocks.append(block)
-                if index < total:
-                    self._sleep(0.05)
-
-            if len({b.hex() for b in app_blocks}) != 1:
-                errors.append("application block samples differ")
+                    app_blocks.append(block)
+                    if index < total:
+                        self._sleep(0.05)
+                if len({b.hex() for b in app_blocks}) != 1:
+                    errors.append("application block samples differ")
+                phase_status["application"] = "ok"
+            except (ElatecError, SerialCommunicationError, ValueError, OSError) as exc:
+                errors.append(f"application block failed: {exc}")
+                phase_status["application"] = "error"
+                if not app_blocks:
+                    raise
             app = app_blocks[0]
             app_hex = app.hex(" ").upper()
 
             session_bytes: bytes | None = None
             session_samples: list[bytes] = []
             if self.config.include_session and self.config.session_duration_seconds > 0:
+                phase_status["session"] = "pending"
                 progress(CapturePhase.SESSION, message="SESSION")
                 try:
-                    self._ensure_selected(client, uid)
+                    check_capture_timeout()
                     end = time.monotonic() + self.config.session_duration_seconds
                     while time.monotonic() < end:
-                        try:
-                            session_samples.append(ntag.read_session_registers())
-                        except (ElatecError, SerialCommunicationError, ValueError):
-                            self._ensure_selected(client, uid)
-                            session_samples.append(ntag.read_session_registers())
+                        session_samples.append(
+                            self._retry_call(
+                                "SESSION",
+                                ntag.read_session_registers,
+                                client=client,
+                                uid=uid,
+                            )
+                        )
                         self._sleep(self.config.session_interval_ms / 1000.0)
                     session_bytes = session_samples[0] if session_samples else None
-                except (ElatecError, SerialCommunicationError, ValueError) as exc:
-                    # Session is optional — keep application block capture.
+                    phase_status["session"] = "ok" if session_bytes else "error"
+                    if session_bytes is None:
+                        errors.append("session read returned no samples")
+                except (ElatecError, SerialCommunicationError, ValueError, OSError) as exc:
                     errors.append(f"session read failed: {exc}")
+                    phase_status["session"] = "error"
                     session_bytes = None
 
             full_dump: bytes | None = None
             if self.config.include_full_dump:
+                phase_status["eeprom"] = "pending"
                 progress(CapturePhase.EEPROM, message="EEPROM")
                 try:
-                    self._ensure_selected(client, uid)
+                    check_capture_timeout()
                     samples = max(1, int(self.config.full_dump_samples or 1))
                     dumps: list[bytes] = []
                     for index in range(samples):
@@ -386,13 +481,19 @@ class FieldCollector:
                     if len({d.hex() for d in dumps}) != 1:
                         errors.append("full dump samples differ")
                     full_dump = dumps[0]
-                except (ElatecError, SerialCommunicationError, ValueError) as exc:
-                    # Full dump is best-effort; application block is enough for OK.
+                    phase_status["eeprom"] = "ok"
+                except (ElatecError, SerialCommunicationError, ValueError, OSError) as exc:
                     errors.append(f"full dump failed: {exc}")
+                    phase_status["eeprom"] = "error"
                     full_dump = None
 
+            check_capture_timeout()
             progress(CapturePhase.SAVING, message="SAVING")
-            directory = create_capture_directory(Path(self.config.capture_root), uid)
+            try:
+                directory = create_capture_directory(Path(self.config.capture_root), uid)
+            except OSError as exc:
+                phase_status["save"] = "error"
+                raise SerialCommunicationError(f"cannot create capture dir: {exc}") from exc
             (directory / "application_block.bin").write_bytes(app)
             write_json(
                 directory / "application_block.json",
@@ -478,15 +579,23 @@ class FieldCollector:
                     else None
                 ),
                 "port": port,
+                "phase_status": phase_status,
             }
             write_json(directory / "metadata.json", metadata)
             required.append("metadata.json")
+            phase_status["save"] = "ok"
 
             progress(CapturePhase.VERIFYING, message="VERIFYING")
-            hashes = verify_artifacts(directory, required)
-            hashes["application_block_bytes"] = sha256_bytes(app)
-            if full_dump is not None:
-                hashes["dump_bytes"] = sha256_bytes(full_dump)
+            try:
+                hashes = verify_artifacts(directory, required)
+                hashes["application_block_bytes"] = sha256_bytes(app)
+                if full_dump is not None:
+                    hashes["dump_bytes"] = sha256_bytes(full_dump)
+                phase_status["verify"] = "ok"
+            except (OSError, FileNotFoundError, ValueError) as exc:
+                phase_status["verify"] = "error"
+                errors.append(f"verify failed: {exc}")
+                hashes = {}
 
             status = (
                 FinishStatus.COMPLETED_WITH_ERRORS
@@ -495,6 +604,7 @@ class FieldCollector:
             )
             metadata["finish_status"] = status.value
             metadata["sha256"] = hashes
+            metadata["phase_status"] = phase_status
 
             # One tag sniff → one tar: /home/sniffer/capture/DDMMYYYY_HH_MM.tar
             export_tar: str | None = None
@@ -570,6 +680,7 @@ class FieldCollector:
                 sha256=hashes,
                 errors=errors,
                 metadata=metadata,
+                phase_status=phase_status,
             )
         except (ElatecError, SerialCommunicationError, OSError, ValueError) as exc:
             errors.append(str(exc))
@@ -582,14 +693,21 @@ class FieldCollector:
                         "finish_status": FinishStatus.PARTIAL.value,
                         "errors": errors,
                         "read_only": True,
+                        "phase_status": phase_status,
                     },
                 )
+            # Keep any successfully read application data as COMPLETED_WITH_ERRORS
+            # when we already have an application block on disk / in memory.
+            finish = FinishStatus.PARTIAL
+            if app_hex and directory is not None:
+                finish = FinishStatus.COMPLETED_WITH_ERRORS
             return FieldCaptureResult(
                 uid=uid,
                 get_version=get_version,
                 directory=str(directory) if directory else None,
-                finish_status=FinishStatus.PARTIAL,
+                finish_status=finish,
                 application_block_hex=app_hex,
                 sha256=hashes,
                 errors=errors,
+                phase_status=phase_status,
             )
