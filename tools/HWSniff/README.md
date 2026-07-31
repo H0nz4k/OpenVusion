@@ -44,9 +44,16 @@ sudo systemctl status hwsniff
 **Do not run `install.sh` for updates.** Use the guardian updater:
 
 ```bash
-cd /path/to/OpenVusion
-sudo bash tools/HWSniff/safe-update.sh          # pull + sync + verify
+cd /opt/OpenVusion
+sudo bash tools/HWSniff/safe-update.sh            # sudo git pull --ff-only + sync
 sudo bash tools/HWSniff/safe-update.sh --restart  # same, then restart
+```
+
+Manual pull on the Pi is always:
+
+```bash
+cd /opt/OpenVusion
+sudo git pull --ff-only
 ```
 
 What `safe-update.sh` protects:

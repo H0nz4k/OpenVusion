@@ -256,8 +256,10 @@ class HWSniffTests(unittest.TestCase):
     def test_safe_update_guardian(self):
         root = Path(__file__).resolve().parents[1]
         script = (root / "safe-update.sh").read_text(encoding="utf-8")
-        self.assertIn("git pull", script)
+        self.assertIn("git pull --ff-only", script)
+        self.assertIn("sudo git pull --ff-only", script)
         self.assertIn("--code-only", script)
+        self.assertNotIn("sudo -u", script)
         self.assertIn("update-backups", script)
         self.assertIn("refusing dangerous flag", script)
         self.assertIn("start-hwsniff-appliance.sh", script)

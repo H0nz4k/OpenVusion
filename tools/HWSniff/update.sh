@@ -40,10 +40,11 @@ for arg in "$@"; do
 Usage: sudo bash update.sh [--code-only] [--no-restart] [--reinstall-deps] [--update-unit]
 
 SAFE default (recommended on a working Pi):
-  cd /path/to/OpenVusion && git pull
+  cd /opt/OpenVusion
+  sudo git pull --ff-only
   sudo bash tools/HWSniff/update.sh --code-only
-  # then when ready:
-  sudo systemctl restart hwsniff
+  # or one shot:
+  sudo bash tools/HWSniff/safe-update.sh --restart
 
 What this script does NOT do by default:
   - apt-get / system package updates

@@ -44,12 +44,20 @@ sudo reboot
 Use the guardian — one command:
 
 ```bash
-cd /path/to/OpenVusion
+cd /opt/OpenVusion
 sudo bash tools/HWSniff/safe-update.sh --restart
 ```
 
-Flow: snapshot protected files → `git pull --ff-only` → `update.sh --code-only`
-→ verify unit/config/wrapper → restore if anything drifted → optional restart.
+Flow: snapshot protected files → `sudo git pull --ff-only` (as root) →
+`update.sh --code-only` → verify unit/config/wrapper → restore if drifted →
+optional restart.
+
+Standalone pull on the Pi:
+
+```bash
+cd /opt/OpenVusion
+sudo git pull --ff-only
+```
 
 Protected paths:
 - `/etc/systemd/system/hwsniff.service`

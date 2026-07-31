@@ -6,7 +6,7 @@
 #
 # Does:
 #   1) snapshot protected system files
-#   2) git pull (as the real user when run via sudo)
+#   2) sudo git pull --ff-only (script is root; pull runs as root)
 #   3) code-only sync into /opt/Sniff  (never apt, never unit rewrite)
 #   4) verify protected files unchanged + appliance wrapper present
 #   5) restore unit from snapshot if somehow altered
@@ -143,21 +143,11 @@ git_pull() {
   [[ "${DO_PULL}" -eq 1 ]] || { log "Skipping git pull (--no-pull)"; return; }
   [[ -d "${REPO_ROOT}/.git" ]] || die "not a git repo: ${REPO_ROOT}"
 
-  local pull_user=""
-  if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
-    pull_user="${SUDO_USER}"
-  fi
-
-  log "git pull in ${REPO_ROOT}"
-  if [[ -n "${pull_user}" ]]; then
-    # Avoid root-owned git objects / credential mess.
-    if ! sudo -u "${pull_user}" git -C "${REPO_ROOT}" pull --ff-only; then
-      die "git pull --ff-only failed (commit/stash local changes, or fix conflicts)"
-    fi
-  else
-    if ! git -C "${REPO_ROOT}" pull --ff-only; then
-      die "git pull --ff-only failed"
-    fi
+  # On this appliance the OpenVusion tree is updated as root.
+  # Equivalent to: sudo git pull --ff-only
+  log "sudo git pull --ff-only in ${REPO_ROOT}"
+  if ! git -C "${REPO_ROOT}" pull --ff-only; then
+    die "git pull --ff-only failed (commit/stash local changes, or fix conflicts)"
   fi
   git -C "${REPO_ROOT}" log -1 --oneline | sed 's/^/[safe-update] HEAD /'
 }
