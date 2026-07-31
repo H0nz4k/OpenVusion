@@ -134,17 +134,18 @@ class TouchUI:
         elif state == AppState.SHUTDOWN_CONFIRM:
             button("ZRUŠIT", "shutdown_cancel", 40, (80, 80, 80))
             button("VYPNOUT", "shutdown_confirm", 260, (160, 30, 30))
-        elif state in (
-            AppState.SWEETP_WAITING_FOR_TAG,
-            AppState.SWEETP_CHECKING,
-            AppState.SWEETP_STARTING,
-        ):
+        elif state == AppState.SWEETP_STARTING:
             button("ZRUŠIT", "sweetp_cancel", self.width // 2 - 70, (180, 40, 40))
-        elif state == AppState.SWEETP_GOOD_POSITION:
-            button("HOTOVO", "sweetp_done", self.width // 2 - 70, (20, 150, 60))
-        elif state == AppState.SWEETP_UNSTABLE_POSITION:
-            button("ZRUŠIT", "sweetp_cancel", 40, (180, 40, 40), w=150)
-            button("ZNOVU", "sweetp_retry", 250, (180, 120, 20), w=150)
+        elif state == AppState.SWEETP_WAITING_FOR_TAG:
+            button("ZRUŠIT", "sweetp_cancel", self.width // 2 - 70, (180, 40, 40))
+        elif state in (
+            AppState.SWEETP_CHECKING,
+            AppState.SWEETP_UNSTABLE_POSITION,
+            AppState.SWEETP_GOOD_POSITION,
+        ):
+            button("ZRUŠIT", "sweetp_cancel", 24, (180, 40, 40), w=140)
+            if snap.sweetp_enough_samples or snap.sweetp_position_ok:
+                button("HOTOVO", "sweetp_done", 300, (20, 150, 60), w=150)
         elif state == AppState.SWEETP_READER_ERROR:
             button("ZRUŠIT", "sweetp_cancel", 40, (180, 40, 40), w=150)
             button("ZNOVU", "sweetp_retry", 250, (180, 120, 20), w=150)
@@ -197,52 +198,68 @@ class TouchUI:
         self._draw_progress_bar(step, total, y=218)
 
     def _draw_sweetp(self, snap: UiSnapshot, text) -> None:
+        pg = self._pygame
         state = snap.state
-        text("SWEETP", 8, big=True)
-        text(snap.message or USER_FALLBACK.get(state, state.value), 48, big=True)
-        if state == AppState.SWEETP_WAITING_FOR_TAG:
-            text("Přiložte čtečku ke štítku", 100)
-            text("a pomalu hledejte polohu", 130)
-        elif state == AppState.SWEETP_CHECKING:
-            text(f"UID: {snap.last_uid}", 100)
-            text("Kontroluji stabilitu...", 130)
+        if state == AppState.SWEETP_READER_ERROR:
+            text("SWEETP", 8, big=True)
+            text("READER ERROR", 48, big=True, color=(255, 180, 180))
+            text(snap.progress[:40] if snap.progress else "Zkuste ZNOVU", 100)
+            return
+        if state in (AppState.SWEETP_WAITING_FOR_TAG, AppState.SWEETP_STARTING):
+            text("SWEETP", 8, big=True)
+            text("Hledejte polohu", 48, big=True)
+            text("Pomalu posouvejte / otáčejte", 100)
+            text("živá kvalita čtení (ne RSSI)", 130, color=(180, 200, 220))
+            return
+
+        q = snap.sweetp_current_quality
+        if q >= 85 or snap.sweetp_position_ok:
+            q_color = (80, 230, 120)
+        elif q >= 50:
+            q_color = (240, 170, 50)
+        else:
+            q_color = (240, 90, 90)
+
+        text("SWEETP", 4, color=(180, 210, 230))
+        title = "POSITION OK" if snap.sweetp_position_ok else "kvalita polohy"
+        text(title, 28, big=True, color=q_color)
+        text(f"{q:.0f}%", 62, big=True, color=q_color)
+
+        trend = snap.sweetp_trend
+        if trend == "improving":
+            trend_txt, trend_col = "LEPŠÍ ↑", (80, 230, 120)
+        elif trend == "worsening":
+            trend_txt, trend_col = "HORŠÍ ↓", (240, 90, 90)
+        else:
+            trend_txt, trend_col = "STABILNÍ →", (220, 220, 220)
+        text(trend_txt, 100, color=trend_col)
+
+        # Quality bar
+        x, y, w, h = 16, 132, self.width - 32, 20
+        pg.draw.rect(self._screen, (45, 45, 45), pg.Rect(x, y, w, h), border_radius=6)
+        fill = int(w * max(0.0, min(1.0, q / 100.0)))
+        if fill > 0:
+            pg.draw.rect(self._screen, q_color, pg.Rect(x, y, fill, h), border_radius=6)
+
+        ok_n = snap.sweetp_window_successes
+        tot = snap.sweetp_window_total
+        text(f"{ok_n}/{tot}  best {snap.sweetp_best_quality:.0f}%", 158)
+        uid = snap.sweetp_dominant_uid or snap.last_uid or "—"
+        text(f"UID {str(uid)[:18]}", 182)
+        if snap.sweetp_latency_available and snap.sweetp_average_latency_ms is not None:
+            text(f"lat {snap.sweetp_average_latency_ms:.0f} ms", 206)
+        else:
             text(
-                f"Pokus: {snap.sweetp_attempt} / {snap.sweetp_total or 10}",
-                160,
+                f"OK {snap.sweetp_total_successes}  ERR {snap.sweetp_total_failures}",
+                206,
             )
-            if snap.sweetp_quality:
-                text(f"Quality: {snap.sweetp_quality}", 190)
-        elif state == AppState.SWEETP_GOOD_POSITION:
-            text(
-                f"Stabilní čtení: {snap.sweetp_successes} / {snap.sweetp_total}",
-                100,
-            )
-            text("UID je konzistentní", 130)
-            if snap.sweetp_quality:
-                text(f"Quality: {snap.sweetp_quality}", 160)
-        elif state == AppState.SWEETP_UNSTABLE_POSITION:
-            text(
-                f"Stabilní čtení: {snap.sweetp_successes} / {snap.sweetp_total}",
-                100,
-            )
-            text("Posuňte nebo pootočte čtečku", 130)
-            if snap.sweetp_quality:
-                text(f"Quality: {snap.sweetp_quality}", 160)
-        elif state == AppState.SWEETP_READER_ERROR:
-            text("Čtečka neodpovídá", 100)
-            text(snap.progress[:40] if snap.progress else "Zkuste ZNOVU", 130)
-        if snap.progress and state not in (
-            AppState.SWEETP_READER_ERROR,
-            AppState.SWEETP_CHECKING,
-        ):
-            text(snap.progress[:40], 200)
 
 
 USER_FALLBACK = {
-    AppState.SWEETP_WAITING_FOR_TAG: "Přiložte čtečku ke štítku",
-    AppState.SWEETP_CHECKING: "TAG DETECTED",
+    AppState.SWEETP_WAITING_FOR_TAG: "Hledejte polohu",
+    AppState.SWEETP_CHECKING: "SWEETP LIVE",
     AppState.SWEETP_GOOD_POSITION: "POSITION OK",
-    AppState.SWEETP_UNSTABLE_POSITION: "MOVE READER",
+    AppState.SWEETP_UNSTABLE_POSITION: "SWEETP LIVE",
     AppState.SWEETP_READER_ERROR: "SWEETP READER ERROR",
 }
 

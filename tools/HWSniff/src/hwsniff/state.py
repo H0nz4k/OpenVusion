@@ -56,9 +56,9 @@ class AppStateMachine:
             AppState.SHUTDOWN_CONFIRM: {"shutdown_cancel", "shutdown_confirm"},
             AppState.SWEETP_STARTING: {"sweetp_cancel"},
             AppState.SWEETP_WAITING_FOR_TAG: {"sweetp_cancel"},
-            AppState.SWEETP_CHECKING: {"sweetp_cancel"},
-            AppState.SWEETP_GOOD_POSITION: {"sweetp_done"},
-            AppState.SWEETP_UNSTABLE_POSITION: {"sweetp_cancel", "sweetp_retry"},
+            AppState.SWEETP_CHECKING: {"sweetp_cancel", "sweetp_done"},
+            AppState.SWEETP_GOOD_POSITION: {"sweetp_cancel", "sweetp_done"},
+            AppState.SWEETP_UNSTABLE_POSITION: {"sweetp_cancel", "sweetp_done"},
             AppState.SWEETP_READER_ERROR: {"sweetp_cancel", "sweetp_retry"},
             AppState.SWEETP_CANCELLED: {"sweetp_done"},
         }

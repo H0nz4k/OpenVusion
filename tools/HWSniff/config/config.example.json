@@ -34,14 +34,25 @@
     "allow_shutdown_button": true
   },
   "sweetp": {
-    "probe_attempts": 10,
-    "probe_interval_ms": 100,
-    "minimum_success_ratio": 0.9,
-    "minimum_consecutive_successes": 5,
-    "require_stable_uid": true,
+    "sample_interval_ms": 150,
+    "window_size": 20,
+    "short_window_size": 5,
+    "trend_threshold": 5.0,
+    "trend_hold_ms": 800,
+    "good_quality_threshold": 85.0,
+    "poor_quality_threshold": 50.0,
+    "good_hold_ms": 3000,
+    "min_samples_for_trend": 5,
+    "min_samples_for_ok": 8,
+    "latency_good_ms": 80.0,
+    "latency_bad_ms": 600.0,
+    "weight_success": 0.60,
+    "weight_latency": 0.25,
+    "weight_uid_consistency": 0.15,
+    "use_latency": true,
+    "ui_update_ms": 150,
     "require_get_version": true,
-    "require_page_00": true,
-    "require_application_block": true,
-    "auto_repeat_seconds": 0.5
+    "require_page_00": false,
+    "require_application_block": false
   }
 }

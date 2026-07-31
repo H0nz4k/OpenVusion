@@ -67,10 +67,10 @@ USER_TEXT = {
     AppState.FATAL_ERROR: "FATAL ERROR",
     AppState.SHUTDOWN_CONFIRM: "Opravdu vypnout?",
     AppState.SWEETP_STARTING: "SWEETP",
-    AppState.SWEETP_WAITING_FOR_TAG: "SWEETP",
-    AppState.SWEETP_CHECKING: "TAG DETECTED",
+    AppState.SWEETP_WAITING_FOR_TAG: "SWEETP LIVE",
+    AppState.SWEETP_CHECKING: "SWEETP LIVE",
     AppState.SWEETP_GOOD_POSITION: "POSITION OK",
-    AppState.SWEETP_UNSTABLE_POSITION: "MOVE READER",
+    AppState.SWEETP_UNSTABLE_POSITION: "SWEETP LIVE",
     AppState.SWEETP_READER_ERROR: "SWEETP READER ERROR",
     AppState.SWEETP_CANCELLED: "SWEETP CANCELLED",
 }
@@ -134,6 +134,21 @@ class UiSnapshot:
     capture_step: int = 0
     capture_step_total: int = 6
     capture_step_label: str = ""
+    # Live SweetP meter (communication quality, not RF RSSI).
+    sweetp_current_quality: float = 0.0
+    sweetp_best_quality: float = 0.0
+    sweetp_trend: str = "stable"  # improving | worsening | stable
+    sweetp_window_successes: int = 0
+    sweetp_window_total: int = 0
+    sweetp_total_successes: int = 0
+    sweetp_total_failures: int = 0
+    sweetp_dominant_uid: str = ""
+    sweetp_uid_consistency: float = 0.0
+    sweetp_average_latency_ms: float | None = None
+    sweetp_stable_duration_ms: int = 0
+    sweetp_enough_samples: bool = False
+    sweetp_position_ok: bool = False
+    sweetp_latency_available: bool = False
 
 
 @dataclass

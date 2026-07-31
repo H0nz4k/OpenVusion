@@ -176,6 +176,47 @@ class HWSniffApp:
         kwargs.update(extra)
         self.state.set_state(state, **kwargs)
 
+    def _apply_sweetp_live(self, payload: dict[str, Any]) -> None:
+        quality = float(payload.get("current_quality") or 0.0)
+        position_ok = bool(payload.get("position_ok"))
+        poor = bool(payload.get("poor"))
+        uid = payload.get("dominant_uid") or self.state.get().last_uid
+        if position_ok:
+            state = AppState.SWEETP_GOOD_POSITION
+            message = "POSITION OK"
+            banner = "ok"
+        elif poor:
+            state = AppState.SWEETP_UNSTABLE_POSITION
+            message = "SWEETP LIVE"
+            banner = "error"
+        else:
+            state = AppState.SWEETP_CHECKING
+            message = "SWEETP LIVE"
+            banner = None
+        self.state.set_state(
+            state,
+            message=message,
+            banner=banner,
+            last_uid=uid or "—",
+            progress=f"{quality:.0f}%",
+            sweetp_current_quality=quality,
+            sweetp_best_quality=float(payload.get("best_quality") or 0.0),
+            sweetp_trend=str(payload.get("trend") or "stable"),
+            sweetp_window_successes=int(payload.get("window_successes") or 0),
+            sweetp_window_total=int(payload.get("window_total") or 0),
+            sweetp_total_successes=int(payload.get("total_successes") or 0),
+            sweetp_total_failures=int(payload.get("total_failures") or 0),
+            sweetp_dominant_uid=str(payload.get("dominant_uid") or ""),
+            sweetp_uid_consistency=float(payload.get("uid_consistency") or 0.0),
+            sweetp_average_latency_ms=payload.get("average_latency_ms"),
+            sweetp_stable_duration_ms=int(payload.get("stable_duration_ms") or 0),
+            sweetp_enough_samples=bool(payload.get("enough_samples")),
+            sweetp_position_ok=position_ok,
+            sweetp_latency_available=bool(payload.get("latency_available")),
+            sweetp_successes=int(payload.get("window_successes") or 0),
+            sweetp_total=int(payload.get("window_total") or 0),
+        )
+
     def stop_collection(self) -> None:
         self.state.set_state(AppState.STOPPING)
         self.collector.stop()
@@ -219,9 +260,27 @@ class HWSniffApp:
             sweetp_attempt=0,
             sweetp_total=0,
             sweetp_successes=0,
+            sweetp_current_quality=0.0,
+            sweetp_best_quality=0.0,
+            sweetp_trend="stable",
+            sweetp_window_successes=0,
+            sweetp_window_total=0,
+            sweetp_total_successes=0,
+            sweetp_total_failures=0,
+            sweetp_dominant_uid="",
+            sweetp_uid_consistency=0.0,
+            sweetp_average_latency_ms=None,
+            sweetp_stable_duration_ms=0,
+            sweetp_enough_samples=False,
+            sweetp_position_ok=False,
+            sweetp_latency_available=False,
             message="READY",
         )
-        log_event(self.logger, "sweetp_stop", cancelled=cancelled)
+        log_event(
+            self.logger,
+            "sweetp_cancelled" if cancelled else "sweetp_finished",
+            cancelled=cancelled,
+        )
 
     def handle_action(self, action: UiAction) -> None:
         name = action.name
@@ -236,21 +295,17 @@ class HWSniffApp:
         elif name == "sweetp_done":
             self.stop_sweetp(cancelled=False)
         elif name == "sweetp_retry":
-            if self.state.get().state == AppState.SWEETP_READER_ERROR:
-                self.refresh_reader()
-                if self._selected_port and self.state.get().state in (
-                    AppState.READY,
-                    AppState.SWEETP_READER_ERROR,
-                ):
-                    if self.sweetp.running:
-                        self.sweetp.cancel()
-                    self.state.set_state(AppState.SWEETP_STARTING)
-                    self.sweetp.start(self._selected_port, self.config)
-            elif self.sweetp.running:
-                self.sweetp.request_retry()
-                self.state.set_state(AppState.SWEETP_WAITING_FOR_TAG, banner=None)
-            else:
-                self.start_sweetp()
+            if self.sweetp.running:
+                self.sweetp.cancel()
+            self.refresh_reader()
+            if self._selected_port and self.state.get().state in (
+                AppState.READY,
+                AppState.SWEETP_READER_ERROR,
+            ):
+                self._sweetp_session = True
+                self.state.set_state(AppState.SWEETP_STARTING, banner=None)
+                self.sweetp.start(self._selected_port, self.config)
+                log_event(self.logger, "sweetp_start", port=self._selected_port, retry=True)
         elif name == "retry":
             self.refresh_reader()
         elif name == "select":
@@ -285,53 +340,21 @@ class HWSniffApp:
         if name == "sweetp_waiting":
             self.state.set_state(
                 AppState.SWEETP_WAITING_FOR_TAG,
-                message="Přiložte čtečku ke štítku",
-                progress="",
+                message="SWEETP LIVE",
+                progress="Hledejte polohu…",
                 banner=None,
             )
-        elif name == "sweetp_checking":
-            self.state.set_state(
-                AppState.SWEETP_CHECKING,
-                last_uid=payload.get("uid") or self.state.get().last_uid,
-                message="TAG DETECTED",
-                sweetp_attempt=int(payload.get("attempt") or 0),
-                sweetp_total=int(payload.get("total") or 10),
-                progress="Kontroluji stabilitu...",
-            )
-        elif name == "sweetp_attempt":
-            self.state.update(
-                sweetp_attempt=int(payload.get("attempt") or 0),
-                sweetp_total=int(payload.get("total") or 10),
-                progress=(
-                    f"Pokus: {payload.get('attempt')} / {payload.get('total')}"
-                ),
-            )
-        elif name == "sweetp_result":
-            metrics = payload.get("metrics") or {}
-            successes = int(metrics.get("successful_attempts") or 0)
-            total = int(metrics.get("attempts") or payload.get("total") or 10)
-            quality = str(payload.get("quality") or metrics.get("quality") or "")
-            self.state.update(
-                last_uid=payload.get("uid") or self.state.get().last_uid,
-                sweetp_successes=successes,
-                sweetp_total=total,
-                sweetp_quality=quality,
-            )
-            log_event(self.logger, "sweetp_result", **payload)
-            if payload.get("position_ok"):
-                self.state.set_state(
-                    AppState.SWEETP_GOOD_POSITION,
-                    message="POSITION OK",
-                    banner="ok",
-                    progress=f"Quality: {quality}",
-                )
-            else:
-                self.state.set_state(
-                    AppState.SWEETP_UNSTABLE_POSITION,
-                    message="MOVE READER",
-                    banner="error",
-                    progress=f"Quality: {quality}",
-                )
+        elif name == "sweetp_live":
+            self._apply_sweetp_live(payload)
+        elif name in (
+            "sweetp_quality_changed",
+            "sweetp_trend_changed",
+            "sweetp_good_position_entered",
+            "sweetp_good_position_lost",
+            "sweetp_sample",
+            "sweetp_finished",
+        ):
+            log_event(self.logger, name, **payload)
         elif name == "sweetp_reader_error":
             self.state.set_state(
                 AppState.SWEETP_READER_ERROR,
@@ -343,6 +366,9 @@ class HWSniffApp:
         elif name == "sweetp_cancelled":
             log_event(self.logger, "sweetp_cancelled", **payload)
         elif name == "sweetp_stopped":
+            pass
+        # Legacy one-shot events ignored in live mode.
+        elif name in ("sweetp_checking", "sweetp_attempt", "sweetp_result"):
             pass
         elif name in ("collector_started", "loop_started"):
             if self.collector.running and self.state.get().state in FIELD_ACTIVE_STATES:

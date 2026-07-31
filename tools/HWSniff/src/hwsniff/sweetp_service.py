@@ -1,9 +1,11 @@
+"""Live SweetP position-quality worker (read-only, no field captures)."""
+
 from __future__ import annotations
 
 import queue
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from elatec_uid_tool.ntag import (
@@ -14,54 +16,93 @@ from elatec_uid_tool.ntag import (
 from elatec_uid_tool.protocol import ElatecError, SerialCommunicationError
 
 from .models import AppEvent
+from .sweetp_scoring import (
+    ScoringConfig,
+    SweetPLiveSnapshot,
+    SweetPSample,
+    SweetPScorer,
+    SweetPTrend,
+)
 
 
 @dataclass
 class SweetPConfig:
+    sample_interval_ms: float = 150.0
+    window_size: int = 20
+    short_window_size: int = 5
+    trend_threshold: float = 5.0
+    trend_hold_ms: int = 800
+    good_quality_threshold: float = 85.0
+    poor_quality_threshold: float = 50.0
+    good_hold_ms: int = 3000
+    min_samples_for_trend: int = 5
+    min_samples_for_ok: int = 8
+    latency_good_ms: float = 80.0
+    latency_bad_ms: float = 600.0
+    weight_success: float = 0.60
+    weight_latency: float = 0.25
+    weight_uid_consistency: float = 0.15
+    use_latency: bool = True
+    ui_update_ms: float = 150.0
+    handshake_timeout_seconds: float = 2.0
+    # Live probe depth (all read-only). Full block is slower on Pi 3.
+    require_get_version: bool = True
+    require_page_00: bool = False
+    require_application_block: bool = False
+    # Legacy keys kept for merge compatibility (ignored by live loop).
     probe_attempts: int = 10
     probe_interval_ms: float = 100.0
     minimum_success_ratio: float = 0.9
     minimum_consecutive_successes: int = 5
     require_stable_uid: bool = True
-    require_get_version: bool = True
-    require_page_00: bool = True
-    require_application_block: bool = True
     auto_repeat_seconds: float = 0.5
-    handshake_timeout_seconds: float = 2.0
-    poll_interval_seconds: float = 0.15
-    # Communication-quality thresholds (not RF field-strength estimates).
-    excessive_reselect_ratio: float = 0.4
-    excessive_timeout_ratio: float = 0.3
 
 
-@dataclass
-class SweetPMetrics:
-    attempts: int = 0
-    successful_attempts: int = 0
-    failed_attempts: int = 0
-    consecutive_successes_max: int = 0
-    success_ratio: float = 0.0
-    observed_uids: list[str] = field(default_factory=list)
-    uid_stable: bool = False
-    get_version_success_count: int = 0
-    page_00_success_count: int = 0
-    application_block_success_count: int = 0
-    timeout_count: int = 0
-    reselect_count: int = 0
-    reader_reconnect_count: int = 0
-    probe_duration_min_ms: float | None = None
-    probe_duration_avg_ms: float | None = None
-    probe_duration_max_ms: float | None = None
-    quality: str = "POOR"  # GOOD | USABLE | POOR — communication quality
-    position_ok: bool = False
-    reasons: list[str] = field(default_factory=list)
+def _parse_sweetp_config(config: dict[str, Any]) -> SweetPConfig:
+    sweet = config.get("sweetp") or {}
+    reader = config.get("reader") or {}
+    # Back-compat: older probe_interval_ms maps to sample_interval_ms.
+    sample_interval = float(
+        sweet.get("sample_interval_ms", sweet.get("probe_interval_ms", 150))
+    )
+    sample_interval = max(80.0, min(500.0, sample_interval))
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+    use_latency = bool(sweet.get("use_latency", True))
+    w_s = float(sweet.get("weight_success", 0.60 if use_latency else 0.80))
+    w_l = float(sweet.get("weight_latency", 0.25 if use_latency else 0.0))
+    w_u = float(sweet.get("weight_uid_consistency", 0.15 if use_latency else 0.20))
+
+    return SweetPConfig(
+        sample_interval_ms=sample_interval,
+        window_size=max(5, int(sweet.get("window_size", 20))),
+        short_window_size=max(3, int(sweet.get("short_window_size", 5))),
+        trend_threshold=float(sweet.get("trend_threshold", 5.0)),
+        trend_hold_ms=max(0, int(sweet.get("trend_hold_ms", 800))),
+        good_quality_threshold=float(sweet.get("good_quality_threshold", 85.0)),
+        poor_quality_threshold=float(sweet.get("poor_quality_threshold", 50.0)),
+        good_hold_ms=max(0, int(sweet.get("good_hold_ms", 3000))),
+        min_samples_for_trend=max(3, int(sweet.get("min_samples_for_trend", 5))),
+        min_samples_for_ok=max(3, int(sweet.get("min_samples_for_ok", 8))),
+        latency_good_ms=float(sweet.get("latency_good_ms", 80.0)),
+        latency_bad_ms=float(sweet.get("latency_bad_ms", 600.0)),
+        weight_success=w_s,
+        weight_latency=w_l,
+        weight_uid_consistency=w_u,
+        use_latency=use_latency,
+        ui_update_ms=max(50.0, float(sweet.get("ui_update_ms", 150.0))),
+        handshake_timeout_seconds=float(
+            reader.get("handshake_timeout_seconds", 2)
+        ),
+        require_get_version=bool(sweet.get("require_get_version", True)),
+        require_page_00=bool(sweet.get("require_page_00", False)),
+        require_application_block=bool(
+            sweet.get("require_application_block", False)
+        ),
+    )
 
 
 class SweetPService:
-    """Background read-only position probe (no field captures)."""
+    """Continuous live position-quality probe outside the UI thread."""
 
     def __init__(
         self,
@@ -69,15 +110,17 @@ class SweetPService:
         *,
         client_factory: Callable | None = None,
         sleep: Callable[[float], None] | None = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self.events = events
         self._client_factory = client_factory
         self._sleep = sleep or time.sleep
+        self._clock = clock or time.monotonic
         self._thread: threading.Thread | None = None
         self._cancel = threading.Event()
-        self._retry = threading.Event()
         self._port: str | None = None
         self._config = SweetPConfig()
+        self._scorer: SweetPScorer | None = None
 
     @property
     def running(self) -> bool:
@@ -86,29 +129,27 @@ class SweetPService:
     def start(self, port: str, config: dict[str, Any]) -> None:
         if self.running:
             return
-        sweet = config.get("sweetp") or {}
-        reader = config.get("reader") or {}
-        self._config = SweetPConfig(
-            probe_attempts=int(sweet.get("probe_attempts", 10)),
-            probe_interval_ms=float(sweet.get("probe_interval_ms", 100)),
-            minimum_success_ratio=float(sweet.get("minimum_success_ratio", 0.9)),
-            minimum_consecutive_successes=int(
-                sweet.get("minimum_consecutive_successes", 5)
-            ),
-            require_stable_uid=bool(sweet.get("require_stable_uid", True)),
-            require_get_version=bool(sweet.get("require_get_version", True)),
-            require_page_00=bool(sweet.get("require_page_00", True)),
-            require_application_block=bool(
-                sweet.get("require_application_block", True)
-            ),
-            auto_repeat_seconds=float(sweet.get("auto_repeat_seconds", 0.5)),
-            handshake_timeout_seconds=float(
-                reader.get("handshake_timeout_seconds", 2)
-            ),
+        self._config = _parse_sweetp_config(config)
+        scoring = ScoringConfig(
+            window_size=self._config.window_size,
+            short_window_size=self._config.short_window_size,
+            trend_threshold=self._config.trend_threshold,
+            trend_hold_ms=self._config.trend_hold_ms,
+            good_quality_threshold=self._config.good_quality_threshold,
+            poor_quality_threshold=self._config.poor_quality_threshold,
+            good_hold_ms=self._config.good_hold_ms,
+            min_samples_for_trend=self._config.min_samples_for_trend,
+            min_samples_for_ok=self._config.min_samples_for_ok,
+            latency_good_ms=self._config.latency_good_ms,
+            latency_bad_ms=self._config.latency_bad_ms,
+            weight_success=self._config.weight_success,
+            weight_latency=self._config.weight_latency,
+            weight_uid_consistency=self._config.weight_uid_consistency,
+            use_latency=self._config.use_latency,
         )
+        self._scorer = SweetPScorer(scoring, clock=self._clock)
         self._port = port
         self._cancel.clear()
-        self._retry.clear()
         self._thread = threading.Thread(
             target=self._run,
             name="hwsniff-sweetp",
@@ -119,14 +160,14 @@ class SweetPService:
 
     def cancel(self, *, join_timeout: float = 5.0) -> None:
         self._cancel.set()
-        self._retry.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=join_timeout)
         self._thread = None
         self._emit("sweetp_stopped")
 
     def request_retry(self) -> None:
-        self._retry.set()
+        """Restart live scoring after a reader recovery (same worker restart)."""
+        return None
 
     def _factory(self):
         if self._client_factory:
@@ -136,40 +177,81 @@ class SweetPService:
         return lambda port, timeout: SimpleProtocolClient(port, timeout=timeout)
 
     def _emit(self, name: str, **payload: Any) -> None:
+        # Bound queue growth: drop oldest non-critical live updates if flooded.
+        if name == "sweetp_live" and self.events.qsize() > 32:
+            try:
+                self.events.get_nowait()
+            except queue.Empty:
+                pass
         self.events.put(AppEvent(name=name, payload=payload))
 
     def _run(self) -> None:
-        assert self._port is not None
+        assert self._port is not None and self._scorer is not None
         cfg = self._config
         factory = self._factory()
+        last_ui = 0.0
+        last_quality_bucket = -1
+        last_trend = SweetPTrend.STABLE
+        last_position_ok = False
+        sample_index = 0
+
         try:
-            while not self._cancel.is_set():
-                self._emit("sweetp_waiting")
-                tag_uid = self._wait_for_tag(factory)
-                if self._cancel.is_set() or tag_uid is None:
-                    break
-                self._emit(
-                    "sweetp_checking",
-                    uid=tag_uid,
-                    attempt=0,
-                    total=cfg.probe_attempts,
-                )
-                metrics = self._run_probe_cycle(factory)
-                self._emit(
-                    "sweetp_result",
-                    uid=(metrics.observed_uids[0] if metrics.observed_uids else tag_uid),
-                    position_ok=metrics.position_ok,
-                    quality=metrics.quality,
-                    metrics=metrics.to_dict(),
-                    reasons=metrics.reasons,
-                )
-                if self._cancel.is_set():
-                    break
-                # Wait for removal or ZNOVU / cancel from UI.
-                self._wait_after_result(factory)
-                if self._cancel.is_set():
-                    break
-                self._sleep(cfg.auto_repeat_seconds)
+            self._emit("sweetp_waiting")
+            with factory(self._port, cfg.handshake_timeout_seconds) as client:
+                while not self._cancel.is_set():
+                    started = self._clock()
+                    ok, uid, reason = self._probe_once(client)
+                    latency_ms = max(0.0, (self._clock() - started) * 1000.0)
+                    sample_index += 1
+                    snap = self._scorer.add_sample(
+                        SweetPSample(
+                            success=ok,
+                            uid=uid,
+                            latency_ms=latency_ms,
+                            monotonic_ts=started,
+                        )
+                    )
+                    self._maybe_log_sample(sample_index, snap, ok, uid, latency_ms, reason)
+
+                    quality_bucket = int(snap.current_quality // 5)
+                    if quality_bucket != last_quality_bucket:
+                        self._emit(
+                            "sweetp_quality_changed",
+                            quality=snap.current_quality,
+                            best=snap.best_quality,
+                        )
+                        last_quality_bucket = quality_bucket
+                    if snap.trend != last_trend:
+                        self._emit(
+                            "sweetp_trend_changed",
+                            trend=snap.trend.value,
+                            quality=snap.current_quality,
+                        )
+                        last_trend = snap.trend
+                    if snap.position_ok and not last_position_ok:
+                        self._emit(
+                            "sweetp_good_position_entered",
+                            quality=snap.current_quality,
+                            uid=snap.dominant_uid,
+                        )
+                    elif not snap.position_ok and last_position_ok:
+                        self._emit(
+                            "sweetp_good_position_lost",
+                            quality=snap.current_quality,
+                        )
+                    last_position_ok = snap.position_ok
+
+                    now = self._clock()
+                    if (now - last_ui) * 1000.0 >= cfg.ui_update_ms:
+                        self._emit_live(snap)
+                        last_ui = now
+
+                    elapsed = self._clock() - started
+                    wait = (cfg.sample_interval_ms / 1000.0) - elapsed
+                    if wait > 0 and not self._cancel.is_set():
+                        self._sleep(wait)
+
+            self._emit("sweetp_finished", **self._live_payload(self._scorer.snapshot()))
         except (SerialCommunicationError, ElatecError, OSError) as exc:
             self._emit("sweetp_reader_error", error=str(exc))
         except Exception as exc:  # noqa: BLE001
@@ -178,207 +260,77 @@ class SweetPService:
             if self._cancel.is_set():
                 self._emit("sweetp_cancelled")
 
-    def _wait_for_tag(self, factory) -> str | None:
-        cfg = self._config
-        while not self._cancel.is_set():
-            try:
-                with factory(self._port, cfg.handshake_timeout_seconds) as client:
-                    tag = client.search_tag()
-                    if tag is not None:
-                        return tag.id_hex
-            except (SerialCommunicationError, ElatecError, OSError) as exc:
-                self._emit("sweetp_reader_error", error=str(exc))
-                return None
-            self._sleep(cfg.poll_interval_seconds)
-        return None
+    def _emit_live(self, snap: SweetPLiveSnapshot) -> None:
+        self._emit("sweetp_live", **self._live_payload(snap))
 
-    def _wait_after_result(self, factory) -> None:
-        cfg = self._config
-        self._retry.clear()
-        while not self._cancel.is_set() and not self._retry.is_set():
-            try:
-                with factory(self._port, cfg.handshake_timeout_seconds) as client:
-                    tag = client.search_tag()
-                    if tag is None:
-                        return
-            except (SerialCommunicationError, ElatecError, OSError):
-                self._emit("sweetp_reader_error", error="reader lost after result")
-                return
-            self._sleep(cfg.poll_interval_seconds)
+    def _live_payload(self, snap: SweetPLiveSnapshot) -> dict[str, Any]:
+        return {
+            "current_quality": snap.current_quality,
+            "best_quality": snap.best_quality,
+            "trend": snap.trend.value,
+            "window_successes": snap.window_successes,
+            "window_total": snap.window_total,
+            "total_successes": snap.total_successes,
+            "total_failures": snap.total_failures,
+            "dominant_uid": snap.dominant_uid,
+            "uid_consistency": snap.uid_consistency,
+            "average_latency_ms": snap.average_latency_ms,
+            "stable_duration_ms": snap.stable_duration_ms,
+            "enough_samples": snap.enough_samples,
+            "position_ok": snap.position_ok,
+            "latency_available": snap.latency_available,
+            "poor": snap.current_quality < self._config.poor_quality_threshold,
+        }
 
-    def _run_probe_cycle(self, factory) -> SweetPMetrics:
-        cfg = self._config
-        metrics = SweetPMetrics()
-        consecutive = 0
-        durations: list[float] = []
-        uids: set[str] = set()
-        versions: set[str] = set()
-        pages: set[str] = set()
-        apps: set[str] = set()
-
-        for index in range(1, cfg.probe_attempts + 1):
-            if self._cancel.is_set():
-                break
-            metrics.attempts += 1
-            self._emit(
-                "sweetp_attempt",
-                attempt=index,
-                total=cfg.probe_attempts,
-            )
-            started = time.monotonic()
-            ok, detail = self._probe_once(factory, metrics)
-            elapsed_ms = (time.monotonic() - started) * 1000.0
-            durations.append(elapsed_ms)
-            if ok:
-                metrics.successful_attempts += 1
-                consecutive += 1
-                metrics.consecutive_successes_max = max(
-                    metrics.consecutive_successes_max, consecutive
-                )
-                if detail.get("uid"):
-                    uids.add(detail["uid"])
-                    if detail["uid"] not in metrics.observed_uids:
-                        metrics.observed_uids.append(detail["uid"])
-                if detail.get("version"):
-                    versions.add(detail["version"])
-                    metrics.get_version_success_count += 1
-                if detail.get("page00"):
-                    pages.add(detail["page00"])
-                    metrics.page_00_success_count += 1
-                if detail.get("app"):
-                    apps.add(detail["app"])
-                    metrics.application_block_success_count += 1
-            else:
-                metrics.failed_attempts += 1
-                consecutive = 0
-                reason = detail.get("reason")
-                if reason and reason not in metrics.reasons:
-                    metrics.reasons.append(reason)
-
-            if index < cfg.probe_attempts and not self._cancel.is_set():
-                self._sleep(cfg.probe_interval_ms / 1000.0)
-
-        if durations:
-            metrics.probe_duration_min_ms = min(durations)
-            metrics.probe_duration_max_ms = max(durations)
-            metrics.probe_duration_avg_ms = sum(durations) / len(durations)
-
-        if metrics.attempts:
-            metrics.success_ratio = metrics.successful_attempts / metrics.attempts
-        metrics.uid_stable = len(uids) <= 1 and metrics.successful_attempts > 0
-
-        metrics.position_ok = self._evaluate_ok(
-            metrics, uids, versions, pages, apps
-        )
-        metrics.quality = self._classify_quality(metrics)
-        return metrics
-
-    def _evaluate_ok(
+    def _maybe_log_sample(
         self,
-        metrics: SweetPMetrics,
-        uids: set[str],
-        versions: set[str],
-        pages: set[str],
-        apps: set[str],
-    ) -> bool:
-        cfg = self._config
-        if metrics.attempts == 0:
-            metrics.reasons.append("no attempts")
-            return False
-        if metrics.success_ratio < cfg.minimum_success_ratio:
-            metrics.reasons.append("success ratio below limit")
-            return False
-        if metrics.consecutive_successes_max < cfg.minimum_consecutive_successes:
-            metrics.reasons.append("consecutive successes below limit")
-            return False
-        if cfg.require_stable_uid and (not metrics.uid_stable or len(uids) != 1):
-            metrics.reasons.append("UID unstable")
-            return False
-        if cfg.require_get_version:
-            if metrics.get_version_success_count < metrics.successful_attempts:
-                metrics.reasons.append("GET_VERSION incomplete")
-                return False
-            if len(versions) != 1:
-                metrics.reasons.append("GET_VERSION inconsistent")
-                return False
-        if cfg.require_page_00:
-            if metrics.page_00_success_count < metrics.successful_attempts:
-                metrics.reasons.append("page 0x00 incomplete")
-                return False
-            if len(pages) != 1:
-                metrics.reasons.append("page 0x00 inconsistent")
-                return False
-        if cfg.require_application_block:
-            if metrics.application_block_success_count < metrics.successful_attempts:
-                metrics.reasons.append("application block incomplete")
-                return False
-            if len(apps) != 1:
-                metrics.reasons.append("application block inconsistent")
-                return False
-            # Each app hex is 32 bytes → 64 hex chars without spaces.
-            app_hex = next(iter(apps))
-            if len(bytes.fromhex(app_hex)) != 32:
-                metrics.reasons.append("application block length != 32")
-                return False
-        if metrics.attempts and (
-            metrics.reselect_count / metrics.attempts > cfg.excessive_reselect_ratio
-        ):
-            metrics.reasons.append("excessive reselect")
-            return False
-        if metrics.attempts and (
-            metrics.timeout_count / metrics.attempts > cfg.excessive_timeout_ratio
-        ):
-            metrics.reasons.append("excessive timeouts")
-            return False
-        if metrics.reader_reconnect_count > 0:
-            metrics.reasons.append("reader reconnect during probe")
-            return False
-        return True
-
-    def _classify_quality(self, metrics: SweetPMetrics) -> str:
-        if metrics.position_ok and metrics.success_ratio >= 0.95:
-            return "GOOD"
-        if metrics.success_ratio >= 0.7 and metrics.consecutive_successes_max >= 3:
-            return "USABLE"
-        return "POOR"
+        index: int,
+        snap: SweetPLiveSnapshot,
+        ok: bool,
+        uid: str | None,
+        latency_ms: float,
+        reason: str | None,
+    ) -> None:
+        # Periodic summary every 10 samples to avoid log flood.
+        if index == 1 or index % 10 == 0:
+            self._emit(
+                "sweetp_sample",
+                index=index,
+                ok=ok,
+                uid=uid,
+                latency_ms=round(latency_ms, 1),
+                quality=round(snap.current_quality, 1),
+                reason=reason,
+            )
 
     def _probe_once(
-        self, factory, metrics: SweetPMetrics
-    ) -> tuple[bool, dict[str, str]]:
+        self, client: Any
+    ) -> tuple[bool, str | None, str | None]:
         cfg = self._config
-        detail: dict[str, str] = {}
         try:
-            with factory(self._port, cfg.handshake_timeout_seconds) as client:
-                tag = client.search_tag()
-                if tag is None:
-                    metrics.reselect_count += 1
-                    return False, {"reason": "tag lost / reselect"}
-                detail["uid"] = tag.id_hex
-                ntag = NtagI2CPlus(client)
-                if cfg.require_get_version:
-                    version = ntag.get_version()
-                    detail["version"] = version.raw.hex(" ").upper()
-                if cfg.require_page_00:
-                    page00 = ntag.read_page(0x00)
-                    detail["page00"] = page00.hex(" ").upper()
-                if cfg.require_application_block:
-                    block = ntag.read_eeprom_range(
-                        EEPROM_WATCH_START_PAGE,
-                        EEPROM_WATCH_END_PAGE,
-                    )
-                    if len(block) != 32:
-                        return False, {"reason": "application block length"}
-                    detail["app"] = block.hex()
-                return True, detail
+            tag = client.search_tag()
+            if tag is None:
+                return False, None, "no_tag"
+            uid = tag.id_hex
+            ntag = NtagI2CPlus(client)
+            if cfg.require_get_version:
+                ntag.get_version()
+            if cfg.require_page_00:
+                ntag.read_page(0x00)
+            if cfg.require_application_block:
+                block = ntag.read_eeprom_range(
+                    EEPROM_WATCH_START_PAGE,
+                    EEPROM_WATCH_END_PAGE,
+                )
+                if len(block) != 32:
+                    return False, uid, "app_block_length"
+            return True, uid, None
         except SerialCommunicationError as exc:
             text = str(exc).lower()
             if "timeout" in text or "neodpověděl" in text:
-                metrics.timeout_count += 1
-                return False, {"reason": "timeout"}
-            metrics.reselect_count += 1
-            return False, {"reason": str(exc)[:80]}
-        except (ElatecError, OSError) as exc:
-            metrics.reader_reconnect_count += 1
-            return False, {"reason": f"reader error: {exc}"[:80]}
+                return False, None, "timeout"
+            return False, None, str(exc)[:60]
+        except (ElatecError, OSError):
+            raise
         except Exception as exc:  # noqa: BLE001
-            return False, {"reason": str(exc)[:80]}
+            return False, None, str(exc)[:60]
