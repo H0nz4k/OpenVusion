@@ -29,7 +29,7 @@ READY                          SNIFFING ACTIVE
 **SWEETP** — live read-stability / position-quality meter (not RF RSSI; no capture dataset).
 See [docs/SWEETP.md](docs/SWEETP.md).
 
-## Quick install (on Pi)
+## Quick install (on Pi, once)
 
 From an OpenVusion checkout that includes `tools/ElaTool`:
 
@@ -37,8 +37,20 @@ From an OpenVusion checkout that includes `tools/ElaTool`:
 cd /path/to/OpenVusion
 sudo bash tools/HWSniff/install.sh --skip-display-config
 sudo systemctl status hwsniff
-sudo /opt/Sniff/scripts/diagnose.sh
 ```
+
+## Update after `git pull` (lightweight)
+
+Does **not** re-run apt, recreate users, or touch display config:
+
+```bash
+cd /path/to/OpenVusion
+git pull
+sudo bash tools/HWSniff/update.sh
+```
+
+That syncs code into `/opt/Sniff` and restarts `hwsniff.service`.
+Use `install.sh` only for first-time / full reinstall.
 
 Optional display setup (parameterized — no guessed Waveshare overlay):
 

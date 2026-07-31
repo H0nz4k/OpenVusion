@@ -39,6 +39,19 @@ Reboot is **not** automatic; confirm manually if display overlays changed:
 sudo reboot
 ```
 
+## Update after git pull (lightweight)
+
+`update.sh` only syncs code into `/opt/Sniff` and restarts the service.
+It does **not** run `apt-get`, recreate the `hwsniff` user, or change display config.
+
+```bash
+cd /path/to/OpenVusion
+git pull
+sudo bash tools/HWSniff/update.sh
+```
+
+Use `install.sh` again only when you need a full reinstall.
+
 ## Paths
 
 | Path | Purpose |
