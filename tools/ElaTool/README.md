@@ -26,7 +26,7 @@ pro analýzu štítků **SES-imagotag VUSION 2.6 BWR GU140** s čipem
 - **NFC Logic Analyzer** — výchozí bezpečný session-only režim;
 - experimentální (neověřený) pokus o RF čtení SRAM, vypnutý ve výchozím stavu;
 - **Trigger Analysis** — asociace RF operací s přechody session registrů;
-- **Application Block Analysis** — pasivní rozbor EEPROM `0x30`–`0x37`.
+- **Application Block Analysis / Study** — pasivní rozbor a dataset EEPROM `0x30`–`0x37`.
 
 ## Potvrzený testovaný tag
 
@@ -326,27 +326,45 @@ Výstup: `captures/trigger-analysis/<timestamp>_<UID>/`
 
 Podrobnosti: [docs/TRIGGER_ANALYSIS.md](docs/TRIGGER_ANALYSIS.md).
 
-## Application Block Analysis (`0x30`–`0x37`)
+## Application Block Analysis / Study (`0x30`–`0x37`)
 
-Pasivní read-only rozbor aplikačního EEPROM bloku.
+Pasivní read-only rozbor a systematický sběr aplikačního EEPROM bloku.
+Trigger Analysis je uzavřená první fáze (general RF/select association);
+tato fáze cílí na EEPROM data.
 
 ```bash
 python -m elatec_uid_tool application-block --port COM6
 
-python -m elatec_uid_tool analyze-application-block dump.json
+python -m elatec_uid_tool capture-application-block \
+  --port COM6 --label reference-before-rf --state before-rf
 
-python -m elatec_uid_tool compare-application-blocks dump1.json dump2.json
+python -m elatec_uid_tool build-application-dataset \
+  captures/application-block \
+  --output captures/application-datasets/reference-study \
+  --representative-only
+
+python -m elatec_uid_tool compare-application-captures \
+  capture_before capture_after --mode intra-tag
+
+python -m elatec_uid_tool compare-application-dataset \
+  captures/application-datasets/reference-study --mode inter-tag
+
+python -m elatec_uid_tool application-study-plan \
+  --name vusion-reference-study \
+  --output captures/application-studies/vusion-reference-study
 ```
 
 Potvrzený fakt: NDEF `AA2CD0C9` == stránka `0x33` `C9 D0 2C AA`
 (little-endian).
 
-Podrobnosti: [docs/APPLICATION_BLOCK_ANALYSIS.md](docs/APPLICATION_BLOCK_ANALYSIS.md).
+Podrobnosti: [docs/APPLICATION_BLOCK_ANALYSIS.md](docs/APPLICATION_BLOCK_ANALYSIS.md),
+[docs/APPLICATION_BLOCK_STUDY.md](docs/APPLICATION_BLOCK_STUDY.md),
+[docs/APPLICATION_BLOCK_DATASET.md](docs/APPLICATION_BLOCK_DATASET.md).
 
 ## Plán dalšího vývoje
 
-1. fyzický běh Trigger Analysis na COM6 a vyhodnocení scénářů;
-2. porovnání application block napříč více stavy štítku;
+1. fyzický capture referenčního bloku v několika stavech (COM6);
+2. dataset + intra/inter-tag porovnání dalších kusů stejného modelu;
 3. offline analýza logic-analyzer timeline;
 4. sjednotit legacy skripty jako tenké wrappery nad CLI.
 

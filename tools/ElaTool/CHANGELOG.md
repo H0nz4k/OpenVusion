@@ -21,8 +21,13 @@ a verzování používá [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Application Block analyzer/compare (`application-block`,
   `analyze-application-block`, `compare-application-blocks`) pro EEPROM
   `0x30`–`0x37` včetně confirmed little-endian NDEF ID match.
+- Application Block Study workflow: `capture-application-block`,
+  `build-application-dataset`, `compare-application-captures`,
+  `compare-application-dataset`, `application-study-plan` (strict read-only).
+- Multi-sample checksum scoring a byte-position / identifier / counter
+  heuristiky pro EEPROM dataset.
 - Unit testy change detection, serializace, CLI parseru, NAK recovery,
-  trigger analysis a application block analýzy.
+  trigger analysis, application block a study workflow.
 
 ### Fixed
 

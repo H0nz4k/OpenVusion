@@ -39,6 +39,16 @@ Označení: **confirmed little-endian identifier match**.
 python -m elatec_uid_tool application-block --port COM6
 ```
 
+Opakovaný capture + dataset (study workflow):
+
+```bash
+python -m elatec_uid_tool capture-application-block \
+  --port COM6 --label reference-before-rf --state before-rf
+```
+
+Viz [APPLICATION_BLOCK_STUDY.md](APPLICATION_BLOCK_STUDY.md) a
+[APPLICATION_BLOCK_DATASET.md](APPLICATION_BLOCK_DATASET.md).
+
 Analýza dumpu:
 
 ```bash
@@ -50,6 +60,7 @@ Porovnání:
 
 ```bash
 python -m elatec_uid_tool compare-application-blocks dump1.json dump2.json
+python -m elatec_uid_tool compare-application-captures before after --mode intra-tag
 ```
 
 ## Výstupy analýzy
@@ -68,13 +79,15 @@ python -m elatec_uid_tool compare-application-blocks dump1.json dump2.json
 
 Testuje se omezená sada přes různé řezy bloku:
 
-- CRC-8 (ATM, Maxim/Dallas);
+- CRC-8 (ATM, Maxim/Dallas, SAE-J1850);
 - CRC-16/IBM, CRC-16/CCITT-FALSE, CRC-16/X25;
-- součet mod 256 / 65536;
-- XOR;
-- one's complement sum.
+- CRC-A (ISO14443-A) jako volitelný kandidát;
+- sum8 / sum16;
+- XOR8;
+- one's / two's complement.
 
-Jediná shoda na jednom dumpu = kandidát, ne důkaz.
+Jediná shoda na jednom dumpu = low confidence. High confidence jen při
+shodě napříč více odlišnými bloky.
 
 ## Porovnání dumpů
 

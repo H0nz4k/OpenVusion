@@ -311,3 +311,39 @@ python -m compileall -q src
 ```bash
 python -m elatec_uid_tool trigger-analysis --port COM6 --all --verbose
 ```
+
+---
+
+## 2026-07-31 — Application Block Study workflow
+
+### Kontext
+
+Trigger Analysis (capture `2026-07-31_01-49-00_…`) potvrdil:
+
+> Results are consistent with a general RF/select-associated host wake-up,
+> not a command-specific trigger.
+
+Další fáze: systematický read-only sběr a porovnání EEPROM `0x30`–`0x37`.
+
+### Provedené změny
+
+- CLI: `capture-application-block`, `build-application-dataset`,
+  `compare-application-captures`, `compare-application-dataset`,
+  `application-study-plan`.
+- Dataset manifest, byte-position stats, identifier correlation,
+  counter/timestamp heuristiky, multi-sample checksum scoring.
+- Dokumentace `APPLICATION_BLOCK_STUDY.md`, `APPLICATION_BLOCK_DATASET.md`.
+
+### Testy
+
+```text
+python -m unittest discover -s tests -v
+python -m compileall -q src
+```
+
+### Doporučený fyzický experiment
+
+```bash
+python -m elatec_uid_tool application-study-plan --name vusion-reference-study --output captures/application-studies/vusion-reference-study --port COM6
+python -m elatec_uid_tool capture-application-block --port COM6 --label reference-baseline --state baseline-idle --notes "Idle baseline" --verbose
+```
