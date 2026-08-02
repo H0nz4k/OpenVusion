@@ -71,22 +71,19 @@ No tag → green / orange / red all OFF.
 
 DIP2 is **RESERVED** (ignored). DIP changes apply immediately and take priority over START.
 
-## Install (Pi Zero 2 W)
+## Install / deploy (Pi Zero 2 W)
 
-See **[deploy/README.md](deploy/README.md)** (pack on PC → copy → install on clean Pi).
+See **[deploy/README.md](deploy/README.md)**.
 
-```bash
-# on PC:
-python tools/HWSniff/deploy/pack_gpio_bundle.py
+```powershell
+# Windows — daily code update over SSH:
+cd tools\HWSniff\deploy
+copy deploy.env.example deploy.env   # once: set HWSNIFF_PI=user@IP
+.\deploy-to-pi.ps1                   # Quick sync + restart
 
-# on Pi (from unpacked bundle):
-sudo bash install-on-pi.sh --no-start
-sudo reboot
-sudo -u hwsniff /opt/Sniff/.venv/bin/python -m hwsniff --gpio-test
-sudo systemctl start hwsniff
+# First install on a clean Pi:
+.\deploy-to-pi.ps1 -Target pi@IP -Mode Full
 ```
-
-From a git checkout on the Pi: `sudo bash tools/HWSniff/deploy/install-on-pi.sh`.
 
 This installs **no** Xorg/Waveshare/pygame.
 

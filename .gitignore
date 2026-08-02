@@ -16,3 +16,7 @@ temp/
 __pycache__/
 *.py[cod]
 
+# HWSniff local deploy secrets + packed archives
+tools/HWSniff/deploy/deploy.env
+tools/HWSniff/deploy/dist/
+

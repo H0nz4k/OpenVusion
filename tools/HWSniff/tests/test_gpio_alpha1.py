@@ -9,7 +9,7 @@ from hwsniff.buttons import ButtonConfig, ButtonEvent, ButtonWatcher
 from hwsniff.collector_service import MockCollector
 from hwsniff.configuration import DEFAULT_CONFIG
 from hwsniff.dip import DipReader, dip_mode_from_levels
-from hwsniff.gpio_backend import MockGpioBackend
+from hwsniff.gpio_backend import GpioZeroBackend, MockGpioBackend
 from hwsniff.gpio_test import run_gpio_test
 from hwsniff.network import NetworkMonitor, probe_wlan
 from hwsniff.patterns import PatternEngine, PatternKind, PatternTimings
@@ -47,6 +47,41 @@ class GpioDefaultsTests(unittest.TestCase):
         self.assertEqual(g["leds"]["blue"], 13)
         self.assertEqual(g["leds"]["orange"], 19)
         self.assertEqual(g["buttons"]["shutdown_hold_seconds"], 3)
+
+
+class GpioZeroLevelTests(unittest.TestCase):
+    def test_gpiozero_value_converted_to_electrical_high(self):
+        """gpiozero .value is is_active; read() must return electrical HIGH."""
+
+        class FakePin:
+            def __init__(self) -> None:
+                self.state = 1  # electrical HIGH (released, pull-up)
+
+        class FakeInput:
+            def __init__(self) -> None:
+                self.pin = FakePin()
+                self.value = False  # not active when HIGH + pull_up
+                self.pull_up = True
+
+            def close(self) -> None:
+                pass
+
+        backend = object.__new__(GpioZeroBackend)
+        backend._inputs = {17: FakeInput()}
+        backend._outputs = {}
+        backend._input_pull_up = {17: True}
+        self.assertTrue(backend.read(17))
+
+        backend._inputs[17].pin.state = 0  # pressed to GND
+        backend._inputs[17].value = True
+        self.assertFalse(backend.read(17))
+
+        # Without pin.state, fall back to inverting is_active for pull_up
+        backend._inputs[17].pin = None
+        backend._inputs[17].value = False
+        self.assertTrue(backend.read(17))
+        backend._inputs[17].value = True
+        self.assertFalse(backend.read(17))
 
 
 class DipTests(unittest.TestCase):

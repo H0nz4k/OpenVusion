@@ -69,7 +69,12 @@ class MockGpioBackend:
 
 
 class GpioZeroBackend:
-    """gpiozero DigitalInputDevice / DigitalOutputDevice wrapper."""
+    """gpiozero DigitalInputDevice / DigitalOutputDevice wrapper.
+
+    Contract: read()/write() use *electrical* levels (True = HIGH).
+    gpiozero's DigitalInputDevice.value is *is_active*, not voltage — with
+    pull_up=True, value=True means the pin is LOW (button/DIP to GND).
+    """
 
     def __init__(self) -> None:
         try:
@@ -83,6 +88,7 @@ class GpioZeroBackend:
         self._DigitalOutput = DigitalOutputDevice
         self._inputs: dict[int, object] = {}
         self._outputs: dict[int, object] = {}
+        self._input_pull_up: dict[int, bool] = {}
 
     def setup_input(self, pin: int, *, pull_up: bool = True) -> None:
         if pin in self._inputs:
@@ -90,6 +96,7 @@ class GpioZeroBackend:
         self._inputs[pin] = self._DigitalInput(
             pin, pull_up=pull_up, bounce_time=None
         )
+        self._input_pull_up[pin] = pull_up
 
     def setup_output(self, pin: int, *, initial: bool = False) -> None:
         if pin in self._outputs:
@@ -97,10 +104,27 @@ class GpioZeroBackend:
         self._outputs[pin] = self._DigitalOutput(pin, initial_value=initial)
 
     def read(self, pin: int) -> bool:
-        dev = self._inputs.get(pin) or self._outputs.get(pin)
-        if dev is None:
-            raise KeyError(f"GPIO {pin} not configured")
-        return bool(getattr(dev, "value"))
+        """Return True when the line is electrically HIGH."""
+        if pin in self._inputs:
+            dev = self._inputs[pin]
+            # Prefer raw pin state when the factory exposes it
+            pin_obj = getattr(dev, "pin", None)
+            if pin_obj is not None:
+                try:
+                    state = pin_obj.state
+                    if state is not None:
+                        return bool(int(state))
+                except Exception:  # noqa: BLE001
+                    pass
+            # Fallback: gpiozero value == is_active
+            active = bool(getattr(dev, "value"))
+            if self._input_pull_up.get(pin, True):
+                # pull-up + active-low: active ⇒ pin LOW ⇒ electrical HIGH is False
+                return not active
+            return active
+        if pin in self._outputs:
+            return bool(getattr(self._outputs[pin], "value"))
+        raise KeyError(f"GPIO {pin} not configured")
 
     def write(self, pin: int, value: bool) -> None:
         dev = self._outputs.get(pin)
@@ -118,6 +142,7 @@ class GpioZeroBackend:
                 pass
         self._inputs.clear()
         self._outputs.clear()
+        self._input_pull_up.clear()
 
 
 def create_backend(*, prefer_mock: bool = False) -> GpioBackend:

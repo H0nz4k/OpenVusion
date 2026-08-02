@@ -2,6 +2,47 @@
 
 Cíl: **Pi Zero 2 W** (nebo jiné Pi s Bookworm), **bez displeje**, jen tlačítka / DIP / LED + později TWN4.
 
+## Deploy z Windows (doporučeno)
+
+Jednou nastav cíl:
+
+```powershell
+cd tools\HWSniff\deploy
+copy deploy.env.example deploy.env
+# uprav HWSNIFF_PI=uzivatel@IP
+```
+
+**Denní update kódu** (sync do `/opt/Sniff` + restart služby):
+
+```powershell
+cd tools\HWSniff\deploy
+.\deploy-to-pi.ps1
+# nebo bez deploy.env:
+.\deploy-to-pi.ps1 -Target pi@192.168.1.50
+```
+
+**První / čistá instalace** na Pi:
+
+```powershell
+.\deploy-to-pi.ps1 -Target pi@192.168.1.50 -Mode Full
+```
+
+Pak na Pi (nebo přes ssh):
+
+```bash
+sudo -u hwsniff /opt/Sniff/.venv/bin/python -m hwsniff --gpio-test
+sudo systemctl enable --now hwsniff
+```
+
+| Parametr | Význam |
+|----------|--------|
+| `-Mode Quick` | default — jen kód, bez apt |
+| `-Mode Full` | pack + `install-on-pi.sh --no-start` |
+| `-NoRestart` | Quick bez `systemctl restart` |
+| `-SkipPack` | Full bez nového packu (použije poslední tar v `dist/`) |
+
+Potřebuješ: OpenSSH Client (`ssh`, `scp`), Python, na Pi už jednou doběhl Full install (pro Quick).
+
 ## Co balík obsahuje
 
 - `tools/HWSniff` — headless aplikace + systemd unit
@@ -10,47 +51,25 @@ Cíl: **Pi Zero 2 W** (nebo jiné Pi s Bookworm), **bez displeje**, jen tlačít
 
 Instalátor **neinstaluje** Xorg, Waveshare, pygame ani framebuffer.
 
-## A) Z Windows: vytvoř balík
-
-V kořeni OpenVusion:
+## Ruční pack (volitelné)
 
 ```powershell
 python tools\HWSniff\deploy\pack_gpio_bundle.py
 ```
 
-Výstup:
+Výstup v `tools/HWSniff/deploy/dist/`.
 
-```
-tools/HWSniff/deploy/dist/hwsniff-gpio-1.0-alpha1-YYYYMMDD.tar.gz
-tools/HWSniff/deploy/dist/hwsniff-gpio-1.0-alpha1-YYYYMMDD.zip
-tools/HWSniff/deploy/dist/hwsniff-gpio-1.0-alpha1-YYYYMMDD.sha256
-```
-
-## B) Přenos na Pi
-
-Pi musí mít síť (SSH). Např. z PowerShellu:
-
-```powershell
-scp tools\HWSniff\deploy\dist\hwsniff-gpio-*.tar.gz pi@IP_ADRESA:~/
-```
-
-Nebo zkopíruj `.zip` na USB a na Pi rozbal.
-
-## C) Instalace na čistém Pi
+## Ruční instalace na Pi (USB / bez skriptu)
 
 ```bash
-# na Pi
 cd ~
 tar -xzf hwsniff-gpio-*.tar.gz
-cd hwsniff-gpio-1.0-alpha1-*   # přesný název podle VERSION
+cd hwsniff-gpio-1.0-alpha1-*
 
-# doporučený bezpečný postup:
-sudo bash install-on-pi.sh --no-start   # NEenable — po rebootu hwsniff NEnaběhne
+sudo bash install-on-pi.sh --no-start
 sudo reboot
-# po rebootu:
 sudo -u hwsniff /opt/Sniff/.venv/bin/python -m hwsniff --gpio-test
 sudo systemctl enable --now hwsniff
-sudo systemctl status hwsniff
 ```
 
 Jedním příkazem (včetně GPIO testu před startem služby):
