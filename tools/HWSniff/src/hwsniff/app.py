@@ -11,7 +11,7 @@ from .buttons import ButtonConfig, ButtonEvent, ButtonWatcher
 from .collector_service import CollectorResult, MockCollector
 from .configuration import DEFAULT_CONFIG, deep_merge, load_config
 from .dip import DipReader
-from .gpio_backend import GpioBackend, MockGpioBackend, create_backend
+from .gpio_backend import GpioBackend, create_backend
 from .health import run_health_checks
 from .leds import LED_NAMES, LedController, LedPins
 from .logging_setup import setup_logging
@@ -22,14 +22,16 @@ from .state import (
     DeviceState,
     DipMode,
     RuntimeState,
+    SweetQuality,
     WlanStatus,
 )
+from .sweet_point import MockSweetPoint, quality_to_led_levels
 
 log = logging.getLogger(__name__)
 
 
 class HeadlessApp:
-    """Alpha1: validate GPIO / state machine / WLAN; mock capture."""
+    """Alpha1: GPIO / MAIN+SWEET_POINT state machine; mock capture + MockSweetPoint."""
 
     def __init__(
         self,
@@ -37,6 +39,7 @@ class HeadlessApp:
         *,
         gpio: GpioBackend | None = None,
         collector: MockCollector | None = None,
+        sweet_point: MockSweetPoint | None = None,
         shutdown_callback: Callable[[], None] | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
@@ -70,6 +73,7 @@ class HeadlessApp:
         timings = PatternTimings(
             slow_ms=int(pat_cfg.get("slow_ms", 500)),
             fast_ms=int(pat_cfg.get("fast_ms", 100)),
+            single_flash_ms=int(pat_cfg.get("single_flash_ms", 150)),
             double_flash_ms=int(pat_cfg.get("double_flash_ms", 150)),
             triple_flash_ms=int(pat_cfg.get("triple_flash_ms", 100)),
         )
@@ -96,7 +100,7 @@ class HeadlessApp:
                 pull_up=bool(btn_cfg.get("pull_up", True)),
                 debounce_ms=int(btn_cfg.get("debounce_ms", 50)),
                 shutdown_hold_seconds=float(
-                    btn_cfg.get("shutdown_hold_seconds", 4)
+                    btn_cfg.get("shutdown_hold_seconds", 3)
                 ),
             ),
             clock=self._clock,
@@ -124,9 +128,16 @@ class HeadlessApp:
         )
         self.collector.on_phase = self._on_collector_phase
 
+        sweet_cfg = self.config.get("mock_sweet_point") or {}
+        self.sweet_point = sweet_point or MockSweetPoint(
+            period_seconds=float(sweet_cfg.get("period_seconds", 1.0)),
+            clock=self._clock,
+        )
+
         self._pending_timer: float | None = None
         self._pending_action: str | None = None
         self._gpio_ok = True
+        self._cancel_phase: str | None = None
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -153,6 +164,10 @@ class HeadlessApp:
 
     def close(self) -> None:
         try:
+            self.sweet_point.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
             self.leds.all_off()
         except Exception:  # noqa: BLE001
             pass
@@ -166,8 +181,14 @@ class HeadlessApp:
 
     def boot(self) -> None:
         self._enter(DeviceState.BOOT)
-        self.runtime.dip_mode = self.dip.read_mode()
-        log.info("DIP mode at boot: %s", self.runtime.dip_mode.value)
+        d1, d2 = self.dip.read_raw()
+        self.runtime.dip_mode = DipMode.SWEET_POINT if d1 else DipMode.MAIN
+        self.runtime.dip2_reserved_on = d2
+        log.info(
+            "DIP at boot: mode=%s dip2_reserved=%s",
+            self.runtime.dip_mode.value,
+            "ON" if d2 else "OFF",
+        )
         self_test = self.config.get("self_test") or {}
         if bool(self_test.get("enabled", True)):
             self._led_self_test(int(self_test.get("led_ms", 180)))
@@ -183,7 +204,13 @@ class HeadlessApp:
         if not report.ok:
             self._enter(DeviceState.ERROR, error=";".join(report.errors))
             return
-        self._enter(DeviceState.READY)
+        # Prime button baseline before READY so a stuck STOP at power-on
+        # cannot arm long-press, while a later edge still works.
+        _ = self.buttons.poll()
+        if self.runtime.dip_mode == DipMode.SWEET_POINT:
+            self._enter_sweet_point()
+        else:
+            self._enter(DeviceState.READY)
 
     def tick(self) -> None:
         now = self._clock()
@@ -191,21 +218,110 @@ class HeadlessApp:
             self.runtime.wlan = self.network.status
             self.runtime.wlan_ip = self.network.ip
             self._apply_wlan_led()
-            self._apply_orange_led()
+
+        # DIP has higher priority than START / button handling
+        self._poll_dip()
 
         for ev in self.buttons.poll():
             self._handle_button(ev)
 
-        self.collector.tick(now)
-        self._poll_collector()
+        if self.runtime.device_state == DeviceState.SWEET_POINT:
+            self._tick_sweet_point(now)
+        else:
+            self.collector.tick(now)
+            self._poll_collector()
+
         self._poll_timers(now)
         self.leds.tick(now)
+
+    # ------------------------------------------------------------------ DIP
+
+    def _poll_dip(self) -> None:
+        d1, d2 = self.dip.read_raw()
+        self.runtime.dip2_reserved_on = d2
+        wanted = DipMode.SWEET_POINT if d1 else DipMode.MAIN
+        if wanted == self.runtime.dip_mode:
+            return
+        prev = self.runtime.dip_mode
+        self.runtime.dip_mode = wanted
+        log.info("DIP mode %s → %s (priority over START)", prev.value, wanted.value)
+        if wanted == DipMode.SWEET_POINT:
+            self._abort_main_for_sweet()
+            self._enter_sweet_point()
+        else:
+            self._leave_sweet_point_to_main()
+
+    def _abort_main_for_sweet(self) -> None:
+        """Stop any MAIN capture when entering Sweet Point."""
+        self._pending_timer = None
+        self._pending_action = None
+        self._cancel_phase = None
+        if self.collector.is_running():
+            self.collector.request_stop()
+            # Drain cancelled result without entering CANCELLED UI sequence
+            self.collector.tick(self._clock())
+            _ = self.collector.get_result()
+        self.runtime.active_cycle_mode = None
+        self.runtime.collector_running = False
+
+    def _enter_sweet_point(self) -> None:
+        self.sweet_point.start()
+        self._enter(DeviceState.SWEET_POINT)
+
+    def _leave_sweet_point_to_main(self) -> None:
+        self.sweet_point.stop()
+        self.runtime.sweet_quality = SweetQuality.NONE
+        self.runtime.sweet_score = None
+        report = run_health_checks(
+            gpio_ok=self._gpio_ok,
+            data_root=self.config.get("data_root"),
+            require_wlan=False,
+            wlan_connected=self.runtime.wlan == WlanStatus.CONNECTED,
+        )
+        if not report.ok:
+            self._enter(DeviceState.ERROR, error=";".join(report.errors))
+            return
+        self._enter(DeviceState.READY)
+
+    def _tick_sweet_point(self, now: float) -> None:
+        sample = self.sweet_point.tick(now)
+        self.runtime.sweet_quality = sample.quality
+        self.runtime.sweet_score = sample.score
+        self._apply_sweet_leds(sample.quality)
+
+    def _apply_sweet_leds(self, quality: SweetQuality) -> None:
+        levels = quality_to_led_levels(quality)
+        self.leds.set_pattern(
+            "green", PatternKind.ON if levels["green"] else PatternKind.OFF
+        )
+        self.leds.set_pattern(
+            "orange", PatternKind.ON if levels["orange"] else PatternKind.OFF
+        )
+        self.leds.set_pattern(
+            "red", PatternKind.ON if levels["red"] else PatternKind.OFF
+        )
+        self.leds.set_pattern("yellow", PatternKind.OFF)
+        self._apply_wlan_led()
 
     # ------------------------------------------------------------------ buttons
 
     def _handle_button(self, ev: ButtonEvent) -> None:
         st = self.runtime.device_state
         log.info("Button %s in %s", ev.value, st.value)
+
+        if st == DeviceState.SWEET_POINT:
+            # START/STOP ignored — Sweet Point is DIP-controlled; power is hardware switch
+            return
+
+        if st == DeviceState.SUCCESS_WAIT_ACK:
+            # START/STOP only acknowledge — never start a new capture here
+            if ev in (
+                ButtonEvent.START_SHORT,
+                ButtonEvent.STOP_SHORT,
+                ButtonEvent.STOP_LONG,
+            ):
+                self._ack_success()
+            return
 
         if ev == ButtonEvent.START_SHORT:
             if st == DeviceState.READY:
@@ -220,15 +336,13 @@ class HeadlessApp:
                         log.warning("Still unhealthy: %s", report.errors)
                         return
                 self._begin_waiting()
-            # READING / SAVING / signals: ignore
             return
 
         if ev == ButtonEvent.STOP_SHORT:
             if st == DeviceState.WAITING:
-                self._enter(DeviceState.CANCELLED)
+                self._begin_cancel_sequence()
             elif st == DeviceState.READING:
                 self.collector.request_stop()
-                # wait for collector result via poll
             elif st == DeviceState.PARTIAL:
                 self._enter(DeviceState.READY)
             elif st == DeviceState.ERROR:
@@ -236,30 +350,25 @@ class HeadlessApp:
             return
 
         if ev == ButtonEvent.STOP_LONG:
-            if st == DeviceState.READING:
-                self.collector.request_stop()
-                self._schedule(0.2, "shutdown_after_stop")
-            elif st in (
-                DeviceState.READY,
-                DeviceState.ERROR,
-                DeviceState.PARTIAL,
-                DeviceState.WAITING,
-            ):
-                self._enter(DeviceState.SHUTDOWN)
+            # 3 s hold: abort everything → back to MAIN READY (no poweroff;
+            # power is a separate hardware switch).
+            self._reset_main_to_ready()
 
     # ------------------------------------------------------------------ cycle
 
     def _begin_waiting(self) -> None:
-        # Re-read DIP only at START of a new cycle
-        self.runtime.dip_mode = self.dip.read_mode()
-        self.runtime.active_cycle_mode = self.runtime.dip_mode
-        log.info("Cycle mode locked: %s", self.runtime.active_cycle_mode.value)
+        if self.runtime.dip_mode != DipMode.MAIN:
+            log.info("START ignored — not in MAIN mode")
+            return
+        self.runtime.active_cycle_mode = DipMode.MAIN
+        log.info("MAIN cycle started")
         self._enter(DeviceState.WAITING)
 
     def _begin_reading(self) -> None:
-        mode = self.runtime.active_cycle_mode or self.runtime.dip_mode
+        if self.runtime.dip_mode != DipMode.MAIN:
+            return
         self._enter(DeviceState.READING)
-        self.collector.start(mode)
+        self.collector.start(DipMode.MAIN)
 
     def _on_collector_phase(self, phase: str) -> None:
         if phase == "saving" and self.runtime.device_state == DeviceState.READING:
@@ -282,13 +391,69 @@ class HeadlessApp:
         self.runtime.last_outcome = result.outcome
         log.info("Collector result: %s (%s)", result.outcome.value, result.message)
         if result.outcome == CollectorOutcome.SUCCESS:
-            self._enter(DeviceState.SUCCESS_SIGNAL)
+            self.runtime.active_cycle_mode = None
+            self.runtime.collector_running = False
+            self._enter(DeviceState.SUCCESS_WAIT_ACK)
         elif result.outcome == CollectorOutcome.PARTIAL:
             self._enter(DeviceState.PARTIAL)
         elif result.outcome == CollectorOutcome.CANCELLED:
-            self._enter(DeviceState.CANCELLED)
+            self._begin_cancel_sequence()
         else:
             self._enter(DeviceState.ERROR, error=result.message or "FAILED")
+
+    def _ack_success(self) -> None:
+        """User confirmed success; do not start a new capture from this press."""
+        log.info("SUCCESS_WAIT_ACK acknowledged")
+        self.leds.set_pattern("orange", PatternKind.OFF)
+        report = run_health_checks(
+            gpio_ok=self._gpio_ok,
+            data_root=self.config.get("data_root"),
+            require_wlan=False,
+            wlan_connected=self.runtime.wlan == WlanStatus.CONNECTED,
+        )
+        if not report.ok:
+            self._enter(DeviceState.ERROR, error=";".join(report.errors))
+            return
+        if self.runtime.dip_mode == DipMode.SWEET_POINT:
+            self._enter_sweet_point()
+            return
+        self._enter(DeviceState.READY)
+
+    def _begin_cancel_sequence(self) -> None:
+        """Red short blink → green confirm blink → READY."""
+        self._cancel_phase = "red"
+        self._enter(DeviceState.CANCELLED)
+
+    def _reset_main_to_ready(self) -> None:
+        """Long STOP: stop collector / signals and return to start of MAIN."""
+        st = self.runtime.device_state
+        if st == DeviceState.READY:
+            log.info("Long STOP in READY — already at MAIN start")
+            return
+        if st == DeviceState.SWEET_POINT:
+            return
+        log.info("Long STOP — abort and reset to MAIN READY")
+        self._pending_timer = None
+        self._pending_action = None
+        if self.collector.is_running():
+            self.collector.request_stop()
+            self.collector.tick(self._clock())
+            _ = self.collector.get_result()
+        self.runtime.active_cycle_mode = None
+        self.runtime.collector_running = False
+        if st in (
+            DeviceState.WAITING,
+            DeviceState.READING,
+            DeviceState.SAVING,
+            DeviceState.CANCELLED,
+        ):
+            self._begin_cancel_sequence()
+            return
+        # PARTIAL / ERROR / other → straight back to READY
+        if self.runtime.dip_mode == DipMode.SWEET_POINT:
+            self._enter_sweet_point()
+        else:
+            self._enter(DeviceState.READY)
 
     # ------------------------------------------------------------------ timers / states
 
@@ -304,14 +469,8 @@ class HeadlessApp:
         action = self._pending_action
         self._pending_timer = None
         self._pending_action = None
-        if action == "after_success":
-            self._enter(DeviceState.READY)
-        elif action == "after_cancelled":
-            self._enter(DeviceState.READY)
-        elif action == "shutdown_after_stop":
-            self._enter(DeviceState.SHUTDOWN)
-        elif action == "saving_hold":
-            pass
+        if action == "cancel_after_stop":
+            self._begin_cancel_sequence()
 
     def _enter(self, state: DeviceState, *, error: str | None = None) -> None:
         prev = self.runtime.device_state
@@ -320,60 +479,92 @@ class HeadlessApp:
             self.runtime.last_error = error
         log.info("State %s → %s", prev.value, state.value)
         self._apply_state_leds(state)
-        if state == DeviceState.SUCCESS_SIGNAL:
-            # triple flash then READY via pattern callback
-            self.leds.set_pattern(
-                "green",
-                PatternKind.TRIPLE,
-                on_complete=lambda: self._enter(DeviceState.READY),
-            )
-        elif state == DeviceState.CANCELLED:
-            self.leds.set_pattern(
-                "red",
-                PatternKind.DOUBLE,
-                on_complete=lambda: self._enter(DeviceState.READY),
-            )
+        if state == DeviceState.CANCELLED:
+            self._start_cancel_red_flash()
         elif state == DeviceState.SHUTDOWN:
             self._do_shutdown()
 
+    def _start_cancel_red_flash(self) -> None:
+        self.leds.set_pattern("green", PatternKind.OFF)
+        self.leds.set_pattern("yellow", PatternKind.OFF)
+        self.leds.set_pattern("orange", PatternKind.OFF)
+        self.leds.set_pattern(
+            "red",
+            PatternKind.SINGLE,
+            on_complete=self._cancel_green_confirm,
+        )
+        self._apply_wlan_led()
+
+    def _cancel_green_confirm(self) -> None:
+        if self.runtime.device_state != DeviceState.CANCELLED:
+            return
+        self._cancel_phase = "green"
+        self.leds.set_pattern("red", PatternKind.OFF)
+        self.leds.set_pattern(
+            "green",
+            PatternKind.SINGLE,
+            on_complete=self._cancel_to_ready,
+        )
+
+    def _cancel_to_ready(self) -> None:
+        if self.runtime.device_state != DeviceState.CANCELLED:
+            return
+        self._cancel_phase = None
+        # DIP may have flipped during cancel — honour current mode
+        if self.runtime.dip_mode == DipMode.SWEET_POINT:
+            self._enter_sweet_point()
+        else:
+            self._enter(DeviceState.READY)
+
     def _apply_state_leds(self, state: DeviceState) -> None:
-        # Reset operational LEDs; WLAN/orange applied after
         if state == DeviceState.BOOT:
             self.leds.all_off()
         elif state == DeviceState.READY:
             self.leds.set_pattern("green", PatternKind.ON)
             self.leds.set_pattern("yellow", PatternKind.OFF)
             self.leds.set_pattern("red", PatternKind.OFF)
+            self.leds.set_pattern("orange", PatternKind.OFF)
         elif state == DeviceState.WAITING:
             self.leds.set_pattern("green", PatternKind.OFF)
             self.leds.set_pattern("yellow", PatternKind.SLOW)
             self.leds.set_pattern("red", PatternKind.OFF)
+            self.leds.set_pattern("orange", PatternKind.OFF)
         elif state == DeviceState.READING:
             self.leds.set_pattern("green", PatternKind.OFF)
             self.leds.set_pattern("yellow", PatternKind.FAST)
             self.leds.set_pattern("red", PatternKind.OFF)
+            self.leds.set_pattern("orange", PatternKind.OFF)
         elif state == DeviceState.SAVING:
             self.leds.set_pattern("yellow", PatternKind.ON)
-        elif state == DeviceState.SUCCESS_SIGNAL:
+            self.leds.set_pattern("orange", PatternKind.OFF)
+        elif state == DeviceState.SUCCESS_WAIT_ACK:
+            self.leds.set_pattern("green", PatternKind.ON)
+            self.leds.set_pattern("orange", PatternKind.ON)
             self.leds.set_pattern("yellow", PatternKind.OFF)
             self.leds.set_pattern("red", PatternKind.OFF)
         elif state == DeviceState.CANCELLED:
             self.leds.set_pattern("green", PatternKind.OFF)
             self.leds.set_pattern("yellow", PatternKind.OFF)
+            self.leds.set_pattern("orange", PatternKind.OFF)
         elif state == DeviceState.PARTIAL:
             self.leds.set_pattern("green", PatternKind.ON)
             self.leds.set_pattern("yellow", PatternKind.OFF)
             self.leds.set_pattern("red", PatternKind.SLOW)
+            self.leds.set_pattern("orange", PatternKind.OFF)
         elif state == DeviceState.ERROR:
             self.leds.set_pattern("green", PatternKind.OFF)
             self.leds.set_pattern("yellow", PatternKind.OFF)
             self.leds.set_pattern("red", PatternKind.ON)
+            self.leds.set_pattern("orange", PatternKind.OFF)
+        elif state == DeviceState.SWEET_POINT:
+            self.leds.set_pattern("yellow", PatternKind.OFF)
+            # quality LEDs applied by _tick_sweet_point / _apply_sweet_leds
         elif state == DeviceState.SHUTDOWN:
             self.leds.set_pattern("green", PatternKind.SLOW)
             self.leds.set_pattern("red", PatternKind.SLOW)
             self.leds.set_pattern("yellow", PatternKind.OFF)
+            self.leds.set_pattern("orange", PatternKind.OFF)
         self._apply_wlan_led()
-        self._apply_orange_led()
 
     def _apply_wlan_led(self) -> None:
         if self.runtime.wlan == WlanStatus.CONNECTED:
@@ -383,26 +574,11 @@ class HeadlessApp:
         else:
             self.leds.set_pattern("blue", PatternKind.OFF)
 
-    def _apply_orange_led(self) -> None:
-        # Orange follows configured DIP mode (live), not mid-cycle lock —
-        # except we still show current dip_mode which updates only on START/boot.
-        # During READING, dip_mode is not re-read, so orange stays on cycle mode.
-        mode = self.runtime.active_cycle_mode or self.runtime.dip_mode
-        if mode == DipMode.NORMAL:
-            self.leds.set_pattern("orange", PatternKind.OFF)
-        elif mode == DipMode.FAST:
-            self.leds.set_pattern("orange", PatternKind.ON)
-        elif mode == DipMode.DEEP:
-            self.leds.set_pattern("orange", PatternKind.SLOW)
-        else:
-            self.leds.set_pattern("orange", PatternKind.FAST)
-
     def _led_self_test(self, led_ms: int) -> None:
         delay = max(0.05, led_ms / 1000.0)
         for name in LED_NAMES:
             self.leds.all_off()
             self.leds.set_pattern(name, PatternKind.ON)
-            # brief blocking OK only during boot self-test
             end = self._clock() + delay
             while self._clock() < end:
                 self.leds.tick()
@@ -410,6 +586,7 @@ class HeadlessApp:
         self.leds.all_off()
 
     def _do_shutdown(self) -> None:
+        """Legacy hook — GPIO long-STOP no longer powers off (hardware switch)."""
         log.warning("SHUTDOWN requested")
         try:
             self._shutdown_callback()

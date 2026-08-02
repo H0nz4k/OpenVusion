@@ -13,20 +13,26 @@ class DeviceState(str, Enum):
     WAITING = "STATE_WAITING"
     READING = "STATE_READING"
     SAVING = "STATE_SAVING"
-    SUCCESS_SIGNAL = "STATE_SUCCESS_SIGNAL"
+    SUCCESS_WAIT_ACK = "STATE_SUCCESS_WAIT_ACK"
     PARTIAL = "STATE_PARTIAL"
     ERROR = "STATE_ERROR"
     CANCELLED = "STATE_CANCELLED"
+    SWEET_POINT = "STATE_SWEET_POINT"
     SHUTDOWN = "STATE_SHUTDOWN"
 
 
 class DipMode(str, Enum):
-    """Working names — easy to rename later without changing wire map."""
+    """DIP1 selects operating mode; DIP2 is reserved."""
 
-    NORMAL = "MODE_NORMAL"
-    FAST = "MODE_FAST"
-    DEEP = "MODE_DEEP"
-    SERVICE = "MODE_SERVICE"
+    MAIN = "MODE_MAIN"
+    SWEET_POINT = "MODE_SWEET_POINT"
+
+
+class SweetQuality(str, Enum):
+    NONE = "none"  # no tag
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
 
 
 class WlanStatus(str, Enum):
@@ -45,7 +51,8 @@ class CollectorOutcome(str, Enum):
 @dataclass
 class RuntimeState:
     device_state: DeviceState = DeviceState.BOOT
-    dip_mode: DipMode = DipMode.NORMAL
+    dip_mode: DipMode = DipMode.MAIN
+    dip2_reserved_on: bool = False
     active_cycle_mode: DipMode | None = None
     wlan: WlanStatus = WlanStatus.OFFLINE
     wlan_ip: str | None = None
@@ -53,4 +60,6 @@ class RuntimeState:
     collector_running: bool = False
     collector_progress: str = ""
     last_outcome: CollectorOutcome | None = None
+    sweet_quality: SweetQuality = SweetQuality.NONE
+    sweet_score: float | None = None
     extras: dict[str, Any] = field(default_factory=dict)

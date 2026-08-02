@@ -19,7 +19,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "active_low": True,
             "pull_up": True,
             "debounce_ms": 50,
-            "shutdown_hold_seconds": 4,
+            "shutdown_hold_seconds": 3,
         },
         "dip": {
             "dip1": 22,
@@ -39,6 +39,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "led_patterns": {
         "slow_ms": 500,
         "fast_ms": 100,
+        "single_flash_ms": 150,
         "double_flash_ms": 150,
         "triple_flash_ms": 100,
     },
@@ -55,8 +56,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "save_seconds": 0.3,
         "outcome": "SUCCESS",
     },
+    "mock_sweet_point": {
+        "period_seconds": 1.0,
+    },
+    "boot": {},
     "shutdown": {
-        "command": ["systemctl", "poweroff"],
+        # Power is a separate hardware switch. GPIO long-STOP does not poweroff.
+        "enabled": False,
+        "command": ["sudo", "systemctl", "poweroff"],
     },
     "reader": {
         "auto_detect": True,

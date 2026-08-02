@@ -12,7 +12,7 @@
       "active_low": true,
       "pull_up": true,
       "debounce_ms": 50,
-      "shutdown_hold_seconds": 4
+      "shutdown_hold_seconds": 3
     },
     "dip": {
       "dip1": 22,
@@ -32,6 +32,7 @@
   "led_patterns": {
     "slow_ms": 500,
     "fast_ms": 100,
+    "single_flash_ms": 150,
     "double_flash_ms": 150,
     "triple_flash_ms": 100
   },
@@ -48,7 +49,14 @@
     "save_seconds": 0.3,
     "outcome": "SUCCESS"
   },
+  "mock_sweet_point": {
+    "period_seconds": 1.0
+  },
+  "boot": {
+    "shutdown_arm_seconds": 30
+  },
   "shutdown": {
-    "command": ["systemctl", "poweroff"]
+    "enabled": false,
+    "command": ["sudo", "systemctl", "poweroff"]
   }
 }

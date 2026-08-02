@@ -23,7 +23,7 @@ class ButtonConfig:
     active_low: bool = True
     pull_up: bool = True
     debounce_ms: int = 50
-    shutdown_hold_seconds: float = 4.0
+    shutdown_hold_seconds: float = 3.0
 
 
 @dataclass
@@ -96,9 +96,11 @@ class ButtonWatcher:
     ) -> list[ButtonEvent]:
         events: list[ButtonEvent] = []
         if track.stable is None:
+            # First sample: if already held (float / stuck / noise),
+            # do NOT arm long-press — wait for a clean release→press edge.
             track.stable = raw
-            if raw:
-                track.press_since = now
+            track.press_since = None
+            track.long_fired = bool(raw)
             return events
 
         if raw != track.stable:

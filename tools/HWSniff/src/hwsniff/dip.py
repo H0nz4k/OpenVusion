@@ -1,4 +1,4 @@
-"""DIP switch reader → DipMode mapping."""
+"""DIP switch reader → MAIN / SWEET_POINT (DIP2 reserved)."""
 
 from __future__ import annotations
 
@@ -6,15 +6,10 @@ from .gpio_backend import GpioBackend
 from .state import DipMode
 
 
-def dip_mode_from_levels(*, dip1_on: bool, dip2_on: bool) -> DipMode:
-    """Map switch ON/OFF to working mode names."""
-    if not dip1_on and not dip2_on:
-        return DipMode.NORMAL
-    if dip1_on and not dip2_on:
-        return DipMode.FAST
-    if not dip1_on and dip2_on:
-        return DipMode.DEEP
-    return DipMode.SERVICE
+def dip_mode_from_levels(*, dip1_on: bool, dip2_on: bool = False) -> DipMode:
+    """DIP1 selects mode; DIP2 is ignored (reserved)."""
+    del dip2_on  # reserved for a future feature
+    return DipMode.SWEET_POINT if dip1_on else DipMode.MAIN
 
 
 class DipReader:
@@ -52,5 +47,6 @@ class DipReader:
         return {
             "dip1": "ON" if d1 else "OFF",
             "dip2": "ON" if d2 else "OFF",
+            "dip2_note": "RESERVED",
             "mode": mode.value,
         }

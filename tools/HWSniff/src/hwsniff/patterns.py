@@ -13,6 +13,7 @@ class PatternKind(str, Enum):
     ON = "on"
     SLOW = "slow"
     FAST = "fast"
+    SINGLE = "single"
     DOUBLE = "double"
     TRIPLE = "triple"
 
@@ -29,6 +30,7 @@ class _Channel:
 class PatternTimings:
     slow_ms: int = 500
     fast_ms: int = 100
+    single_flash_ms: int = 150
     double_flash_ms: int = 150
     triple_flash_ms: int = 100
 
@@ -89,6 +91,12 @@ class PatternEngine:
         if ch.kind == PatternKind.FAST:
             period = max(1, t.fast_ms * 2)
             return (elapsed_ms % period) < t.fast_ms, False
+        if ch.kind == PatternKind.SINGLE:
+            # one short ON then finished OFF
+            step = max(1, t.single_flash_ms)
+            if elapsed_ms < step:
+                return True, False
+            return False, True
         if ch.kind == PatternKind.DOUBLE:
             # ON, OFF, ON, then finished OFF
             step = max(1, t.double_flash_ms)

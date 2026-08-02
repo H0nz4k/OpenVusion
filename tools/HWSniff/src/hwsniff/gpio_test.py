@@ -44,7 +44,7 @@ def run_gpio_test(
     )
     info = dip.describe()
     print(f"DIP1: {info['dip1']}")
-    print(f"DIP2: {info['dip2']}")
+    print(f"DIP2: {info['dip2']} ({info.get('dip2_note', 'RESERVED')})")
     print(f"MODE: {info['mode'].replace('MODE_', '')}")
 
     leds = LedController(
@@ -93,6 +93,9 @@ def run_gpio_test(
             ),
             clock=clock,
         )
+        # Idle baseline (same as app boot) — stuck/low at first sample is ignored
+        _ = buttons.poll()
+
         for expect, label in (
             (ButtonEvent.START_SHORT, "START"),
             (ButtonEvent.STOP_SHORT, "STOP"),

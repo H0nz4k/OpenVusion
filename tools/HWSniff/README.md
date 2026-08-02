@@ -23,8 +23,8 @@ Legacy Waveshare 3.5" touch UI remains under `hwsniff.legacy` (`python -m hwsnif
 | GREEN    | 5        | 29           | GPIO→330Ω→LED→GND, active high |
 | YELLOW   | 6        | 31           | same |
 | RED      | 12       | 32           | same |
-| BLUE     | 13       | 33           | WLAN status |
-| ORANGE   | 19       | 35           | DIP mode |
+| BLUE     | 13       | 33           | WLAN status (independent) |
+| ORANGE   | 19       | 35           | Sweet Point medium quality |
 
 ```text
 GPIO17 ── START ── GND
@@ -40,32 +40,53 @@ GPIO19 ── 330R ── ORANGE LED ── GND
 
 ## LED meanings
 
+### MAIN MODE (DIP1 OFF)
+
 | LED | Meaning |
 |-----|---------|
-| Green | READY / SUCCESS (triple flash) |
+| Green | READY (solid) / SUCCESS_WAIT_ACK (with orange) / cancel confirm |
 | Yellow | WAITING (slow) / READING (fast) / SAVING (solid) |
-| Red | ERROR / PARTIAL (slow) / CANCEL (double flash) |
+| Red | ERROR / PARTIAL (slow) / cancel (single flash) |
 | Blue | WLAN offline / connecting (slow) / connected |
-| Orange | DIP mode: off / solid / slow / fast |
+| Orange | SUCCESS_WAIT_ACK (solid with green); otherwise off |
 
-## DIP modes (working names)
+### SWEET POINT MODE (DIP1 ON)
 
-| DIP1 | DIP2 | Mode |
-|------|------|------|
-| OFF | OFF | `MODE_NORMAL` (orange off) |
-| ON | OFF | `MODE_FAST` (orange on) |
-| OFF | ON | `MODE_DEEP` (orange slow) |
-| ON | ON | `MODE_SERVICE` (orange fast) |
+| LED | Meaning |
+|-----|---------|
+| Green | high quality |
+| Orange | medium quality |
+| Red | low quality |
+| Yellow | always OFF |
+| Blue | WLAN (unchanged) |
 
-DIP is read at boot and again on each START (not mid-cycle).
+No tag → green / orange / red all OFF.
+
+## DIP modes
+
+| DIP1 | Mode |
+|------|------|
+| OFF | `MODE_MAIN` — capture workflow |
+| ON | `MODE_SWEET_POINT` — quality indication (MockSweetPoint in alpha1) |
+
+DIP2 is **RESERVED** (ignored). DIP changes apply immediately and take priority over START.
 
 ## Install (Pi Zero 2 W)
 
+See **[deploy/README.md](deploy/README.md)** (pack on PC → copy → install on clean Pi).
+
 ```bash
-cd /path/to/OpenVusion
-sudo bash tools/HWSniff/install-gpio.sh
-sudo systemctl status hwsniff
+# on PC:
+python tools/HWSniff/deploy/pack_gpio_bundle.py
+
+# on Pi (from unpacked bundle):
+sudo bash install-on-pi.sh --no-start
+sudo reboot
+sudo -u hwsniff /opt/Sniff/.venv/bin/python -m hwsniff --gpio-test
+sudo systemctl start hwsniff
 ```
+
+From a git checkout on the Pi: `sudo bash tools/HWSniff/deploy/install-on-pi.sh`.
 
 This installs **no** Xorg/Waveshare/pygame.
 
@@ -88,10 +109,19 @@ Unit: `systemd/hwsniff-gpio.service` (installed as `hwsniff.service`).
 
 ## Alpha1 behaviour
 
-- START in READY → WAITING (yellow slow blink)
-- START again in WAITING → simulate tag → READING (mock collector ~2 s)
-- STOP cancels; long STOP (4 s) → shutdown callback (`systemctl poweroff`)
-- Collector is `MockCollector` with a stable interface for alpha2 ElaTool/PCSniff swap
+**MAIN**
+- READY = green solid
+- START → WAITING (yellow slow); START again → mock READING → SAVING → `SUCCESS_WAIT_ACK`
+- `SUCCESS_WAIT_ACK`: green+orange solid, no timeout; START/STOP = ACK → health check → READY (does not start capture)
+- Short STOP / long STOP (3 s) during a cycle → abort → red single → green confirm → READY
+- Long STOP = „zastav vše, od začátku MAIN“ → READY (power vypíná samostatný hardwarový spínač, ne GPIO)
+
+**SWEET POINT**
+- DIP1 ON enters immediately; MAIN capture cannot start; START ignored
+- MockSweetPoint cycles none / low / medium / high for LED validation
+- DIP1 OFF → stop monitoring, health check, MAIN READY
+
+Collector remains `MockCollector` (no real ElaTool capture in alpha1).
 
 ## Tests
 
