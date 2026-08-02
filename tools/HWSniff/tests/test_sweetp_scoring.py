@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from hwsniff.sweetp_scoring import (
+from hwsniff.legacy.sweetp_scoring import (
     ScoringConfig,
     SweetPSample,
     SweetPScorer,

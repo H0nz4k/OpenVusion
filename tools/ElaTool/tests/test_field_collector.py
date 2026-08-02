@@ -64,10 +64,21 @@ class FakeClient:
     def set_rf_off(self):
         return None
 
+    def get_version_string(self):
+        return "TWN4 Fake"
+
+    def get_device_type(self):
+        return 0x85
+
+    def get_supported_tag_types(self):
+        return (0, 0xFFFFFFFF)
+
     def iso14443_3_tdx(self, tx, max_rx_bytes=0xFF, timeout_ms=255):
         op = tx[0]
         if op == 0x60:
             return with_crc(bytes.fromhex("00 04 04 05 02 02 13 03"))
+        if op == 0x30:
+            return with_crc(bytes(16))
         if op == 0x3A:
             start, end = tx[1], tx[2]
             if start == 0x30 and end == 0x37:
@@ -148,7 +159,10 @@ class FieldCollectorTests(unittest.TestCase):
             self.assertEqual(result.finish_status, FinishStatus.COMPLETED_SUCCESSFULLY)
             self.assertEqual(result.uid, "04367F5A2D7280")
             self.assertTrue(result.directory)
-            self.assertTrue((Path(result.directory) / "hashes.json").exists())
+            directory = Path(result.directory)
+            self.assertTrue((directory / "summary.json").exists())
+            self.assertTrue((directory / "phases" / "application.json").exists())
+            self.assertTrue((directory / "phases" / "eeprom.json").exists())
             self.assertTrue((root / "index.jsonl").exists())
 
     def test_duplicate_skip(self):
@@ -216,10 +230,14 @@ class FieldCollectorTests(unittest.TestCase):
             self.assertEqual(result.finish_status, FinishStatus.COMPLETED_SUCCESSFULLY)
             self.assertEqual(result.uid, "04367F5A2D7280")
             directory = Path(result.directory)
-            self.assertTrue((directory / "dump.bin").exists())
-            self.assertTrue((directory / "dump.json").exists())
-            self.assertTrue((directory / "application_block.bin").exists())
-            self.assertGreater(len((directory / "dump.bin").read_bytes()), 32)
+            eeprom = directory / "phases" / "eeprom.json"
+            application = directory / "phases" / "application.json"
+            self.assertTrue(eeprom.exists())
+            self.assertTrue(application.exists())
+            import json
+
+            eeprom_data = json.loads(eeprom.read_text(encoding="utf-8"))
+            self.assertGreater(int(eeprom_data.get("pages_ok") or 0), 32)
 
     def test_full_dump_failure_keeps_application_ok(self):
         """EEPROM dump errors must not throw away a good application block."""
@@ -270,7 +288,7 @@ class FieldCollectorTests(unittest.TestCase):
             )
             self.assertTrue(result.directory)
             self.assertTrue(
-                (Path(result.directory) / "application_block.bin").exists()
+                (Path(result.directory) / "phases" / "application.json").exists()
             )
 
     def test_one_tag_sniff_makes_one_tar(self):
@@ -303,11 +321,11 @@ class FieldCollectorTests(unittest.TestCase):
             self.assertTrue(tar_path.name.endswith(".tar"))
             with tarfile.open(tar_path, "r") as archive:
                 names = set(archive.getnames())
-            self.assertIn("application_block.bin", names)
-            self.assertIn("dump.bin", names)
-            self.assertIn("metadata.json", names)
-            self.assertIn("report.txt", names)
-            self.assertIn("hashes.json", names)
+            # Shared engine layout (PCSniff parity); tar flattens basenames.
+            self.assertIn("summary.json", names)
+            self.assertIn("application.json", names)
+            self.assertIn("eeprom.json", names)
+            self.assertIn("events.jsonl", names)
 
     def test_no_write_api_on_collector(self):
         for name in FC.FORBIDDEN_METHODS:

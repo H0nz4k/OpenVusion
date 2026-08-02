@@ -1,3 +1,6 @@
-"""OpenVusion HWSniff — Raspberry Pi touchscreen field collector."""
+"""OpenVusion HWSniff — Pi Zero 2 W headless GPIO field device (v1.0-alpha1).
 
-__version__ = "0.1.0"
+Legacy Waveshare/X11/pygame UI lives in ``hwsniff.legacy``.
+"""
+
+__version__ = "1.0.0a1"

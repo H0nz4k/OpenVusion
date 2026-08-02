@@ -1,2 +1,5 @@
 pyserial>=3.5
-pygame-ce>=2.4.0
+# On Raspberry Pi OS Bookworm prefer apt:
+#   sudo apt install python3-gpiozero python3-lgpio
+# Optional legacy Waveshare touch UI:
+#   pip install pygame-ce

@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hwsniff"
-version = "1.0.0a1"
-description = "OpenVusion HWSniff — Pi Zero 2 W headless GPIO NFC field device"
+name = "twn4-capture-probe"
+version = "0.1.0"
+description = "Windows read-only ELATEC TWN4 single-tag diagnostic capture probe"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -13,11 +13,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-legacy-ui = ["pygame-ce>=2.4.0"]
 dev = ["pytest>=7.0"]
 
 [project.scripts]
-hwsniff = "hwsniff.__main__:main"
+twn4-capture-probe = "twn4_capture_probe.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

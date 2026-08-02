@@ -6,9 +6,58 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_CONFIG: dict[str, Any] = {
+    "platform": "pi-zero-gpio",
+    "version": "1.0-alpha1",
     "data_root": "/var/lib/hwsniff",
     "capture_root": "/var/lib/hwsniff/captures",
     "log_root": "/var/log/hwsniff",
+    "gpio_prefer_mock": False,
+    "gpio": {
+        "buttons": {
+            "start": 17,
+            "stop": 27,
+            "active_low": True,
+            "pull_up": True,
+            "debounce_ms": 50,
+            "shutdown_hold_seconds": 4,
+        },
+        "dip": {
+            "dip1": 22,
+            "dip2": 18,
+            "active_low": True,
+            "pull_up": True,
+        },
+        "leds": {
+            "green": 5,
+            "yellow": 6,
+            "red": 12,
+            "blue": 13,
+            "orange": 19,
+            "active_high": True,
+        },
+    },
+    "led_patterns": {
+        "slow_ms": 500,
+        "fast_ms": 100,
+        "double_flash_ms": 150,
+        "triple_flash_ms": 100,
+    },
+    "network": {
+        "interface": "wlan0",
+        "poll_seconds": 3,
+    },
+    "self_test": {
+        "enabled": True,
+        "led_ms": 180,
+    },
+    "mock_collector": {
+        "work_seconds": 2.0,
+        "save_seconds": 0.3,
+        "outcome": "SUCCESS",
+    },
+    "shutdown": {
+        "command": ["systemctl", "poweroff"],
+    },
     "reader": {
         "auto_detect": True,
         "preferred_serial": None,
@@ -18,7 +67,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "collector": {
         "application_samples": 3,
-        "session_duration_seconds": 1.0,
+        "session_duration_seconds": 2.0,
         "session_interval_ms": 50,
         "allow_duplicate": False,
         "wait_for_removal": False,
@@ -28,8 +77,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "full_dump_samples": 1,
         "export_bundle_root": "/home/sniffer/capture",
         "phase_retry_count": 3,
-        "phase_retry_delay_ms": 100,
-        "tag_acquire_timeout_seconds": 30,
+        "phase_retry_delay_ms": 150,
+        "tag_acquire_timeout_seconds": 60,
         "capture_timeout_seconds": 120,
     },
     "display": {

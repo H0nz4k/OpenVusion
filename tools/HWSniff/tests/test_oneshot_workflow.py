@@ -8,10 +8,10 @@ from pathlib import Path
 from elatec_uid_tool.ntag import crc_a
 from elatec_uid_tool.protocol import SerialCommunicationError, TagRead
 
-from hwsniff.app import HWSniffApp
+from hwsniff.legacy.app import HWSniffApp
 from hwsniff.configuration import DEFAULT_CONFIG, deep_merge
-from hwsniff.models import AppState, FIELD_RESULT_STATES
-from hwsniff.ui import UiAction
+from hwsniff.legacy.models import AppState, FIELD_RESULT_STATES
+from hwsniff.legacy.ui import UiAction
 
 
 REFERENCE_BLOCK = bytes.fromhex(
@@ -64,6 +64,15 @@ class TrackingClient:
 
     def set_rf_off(self):
         return None
+
+    def get_version_string(self):
+        return "TWN4 HWSniff Fake"
+
+    def get_device_type(self):
+        return 0x85
+
+    def get_supported_tag_types(self):
+        return (0, 0xFFFFFFFF)
 
     def iso14443_3_tdx(self, tx, max_rx_bytes=0xFF, timeout_ms=255):
         op = tx[0]
@@ -302,7 +311,7 @@ class OneShotWorkflowTests(unittest.TestCase):
 
     def test_result_screen_has_new_tag_action(self):
         sm_actions = __import__(
-            "hwsniff.state", fromlist=["AppStateMachine"]
+            "hwsniff.legacy.state", fromlist=["AppStateMachine"]
         ).AppStateMachine()
         sm_actions.set_state(AppState.SUCCESS)
         self.assertIn("new_tag", sm_actions.allowed_actions())

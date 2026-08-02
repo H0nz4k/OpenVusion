@@ -1,98 +1,108 @@
-# OpenVusion HWSniff
+# OpenVusion HWSniff — Pi Zero 2 W (v1.0-alpha1)
 
-Touchscreen field device for **read-only** NFC collection from VUSION tags
-via ELATEC TWN4 on Raspberry Pi + Waveshare 3.5" LCD (B).
+**Primary target:** Raspberry Pi Zero 2 W **without display**.
 
-Install target: `/opt/Sniff`
+- ELATEC TWN4 (USB OTG)
+- 2 buttons: START / STOP
+- 2-position DIP: DIP1 / DIP2
+- 5 LEDs: green / yellow / red / blue / orange
+- Headless Python systemd service (GPIO only)
 
-## Purpose
+**Not used on this platform:** LCD, touchscreen, Xorg, xinit, pygame, SDL, framebuffer, Waveshare.
 
-- Offline operation on SD card
-- No keyboard/mouse
-- One-button START / STOP collection
-- Auto-detect ELATEC reader (no COM/`ttyACM0` hardcoding)
-- Uses ElaTool Field Collector API (no protocol duplication)
+Legacy Waveshare 3.5" touch UI remains under `hwsniff.legacy` (`python -m hwsniff --legacy-ui`).
 
-## UI (ASCII)
+## GPIO map
+
+| Function | BCM GPIO | Physical pin | Notes |
+|----------|----------|--------------|--------|
+| START    | 17       | 11           | to GND, pull-up, active low |
+| STOP     | 27       | 13           | to GND, pull-up, active low |
+| DIP1     | 22       | 15           | to GND, pull-up; ON=LOW |
+| DIP2     | 18       | 12           | to GND, pull-up; ON=LOW |
+| GREEN    | 5        | 29           | GPIO→330Ω→LED→GND, active high |
+| YELLOW   | 6        | 31           | same |
+| RED      | 12       | 32           | same |
+| BLUE     | 13       | 33           | WLAN status |
+| ORANGE   | 19       | 35           | DIP mode |
 
 ```text
-READY                          SNIFFING ACTIVE
-┌────────────────────┐         ┌────────────────────┐
-│ OpenVusion HWSniff │         │ SNIFFING ACTIVE    │
-│ READER READY       │         │ Přiložte štítek    │
-│ Storage: 24.3 GB   │         │ Last UID: …        │
-│ [ SWEETP ][ START ]│         │ OK: n  Errors: m   │
-│ Status: READY      │         │     [ STOP ]       │
-└────────────────────┘         └────────────────────┘
+GPIO17 ── START ── GND
+GPIO27 ── STOP  ── GND
+GPIO22 ── DIP1 ── GND
+GPIO18 ── DIP2 ── GND
+GPIO5  ── 330R ── GREEN LED ── GND
+GPIO6  ── 330R ── YELLOW LED ── GND
+GPIO12 ── 330R ── RED LED ── GND
+GPIO13 ── 330R ── BLUE LED ── GND
+GPIO19 ── 330R ── ORANGE LED ── GND
 ```
 
-**SWEETP** — live read-stability / position-quality meter (not RF RSSI; no capture dataset).
-See [docs/SWEETP.md](docs/SWEETP.md).
+## LED meanings
 
-## Quick install (on Pi, once)
+| LED | Meaning |
+|-----|---------|
+| Green | READY / SUCCESS (triple flash) |
+| Yellow | WAITING (slow) / READING (fast) / SAVING (solid) |
+| Red | ERROR / PARTIAL (slow) / CANCEL (double flash) |
+| Blue | WLAN offline / connecting (slow) / connected |
+| Orange | DIP mode: off / solid / slow / fast |
 
-From an OpenVusion checkout that includes `tools/ElaTool`:
+## DIP modes (working names)
+
+| DIP1 | DIP2 | Mode |
+|------|------|------|
+| OFF | OFF | `MODE_NORMAL` (orange off) |
+| ON | OFF | `MODE_FAST` (orange on) |
+| OFF | ON | `MODE_DEEP` (orange slow) |
+| ON | ON | `MODE_SERVICE` (orange fast) |
+
+DIP is read at boot and again on each START (not mid-cycle).
+
+## Install (Pi Zero 2 W)
 
 ```bash
 cd /path/to/OpenVusion
-sudo bash tools/HWSniff/install.sh --skip-display-config
+sudo bash tools/HWSniff/install-gpio.sh
 sudo systemctl status hwsniff
 ```
 
-## Safe update (Waveshare / X11 appliance)
+This installs **no** Xorg/Waveshare/pygame.
 
-**Do not run `install.sh` for updates.** Use the guardian updater:
-
-```bash
-cd /opt/OpenVusion
-sudo bash tools/HWSniff/safe-update.sh            # sudo git pull --ff-only + sync
-sudo bash tools/HWSniff/safe-update.sh --restart  # same, then restart
-```
-
-Manual pull on the Pi is always:
+## GPIO test
 
 ```bash
-cd /opt/OpenVusion
-sudo git pull --ff-only
+sudo -u hwsniff /opt/Sniff/.venv/bin/python -m hwsniff --gpio-test
+# on a PC / CI:
+python -m hwsniff --gpio-test --mock-gpio
 ```
 
-What `safe-update.sh` protects:
-- `/etc/systemd/system/hwsniff.service` (snapshot → restore if changed)
-- `/etc/hwsniff/config.json` and `display.env`
-- ensures `start-hwsniff-appliance.sh` exists after sync
-- never apt, never `--update-unit` / `--force-unit`
-
-Backups land in `/var/lib/hwsniff/update-backups/<timestamp>/`.
-
-X11 unit template (reference only): `systemd/hwsniff-x11.service`.
-
-Optional display setup (parameterized — no guessed Waveshare overlay):
+## Run service
 
 ```bash
-sudo bash tools/HWSniff/install.sh --configure-display
+sudo systemctl enable --now hwsniff
+journalctl -u hwsniff -f
 ```
 
-Export captures to a mounted USB volume:
+Unit: `systemd/hwsniff-gpio.service` (installed as `hwsniff.service`).
 
-```bash
-sudo /opt/Sniff/scripts/export-data.sh /media/usb
-```
+## Alpha1 behaviour
 
-## Docs
+- START in READY → WAITING (yellow slow blink)
+- START again in WAITING → simulate tag → READING (mock collector ~2 s)
+- STOP cancels; long STOP (4 s) → shutdown callback (`systemctl poweroff`)
+- Collector is `MockCollector` with a stable interface for alpha2 ElaTool/PCSniff swap
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-- [docs/INSTALLATION.md](docs/INSTALLATION.md)
-- [docs/TOUCH_UI.md](docs/TOUCH_UI.md)
-- [docs/READER_AUTODETECTION.md](docs/READER_AUTODETECTION.md)
-- [docs/STORAGE_FORMAT.md](docs/STORAGE_FORMAT.md)
-- [docs/FIELD_WORKFLOW.md](docs/FIELD_WORKFLOW.md)
-- [docs/SWEETP.md](docs/SWEETP.md)
-
-## Development tests (PC)
+## Tests
 
 ```bash
 cd tools/HWSniff
-python -m venv .venv
-.venv/Scripts/pip install -e ../ElaTool -e ".[dev]"
-.venv/Scripts/python -m unittest discover -s tests -v
+PYTHONPATH=src:../ElaTool/src python -m unittest discover -s tests -v
+```
+
+## Legacy touchscreen
+
+```bash
+python -m hwsniff --legacy-ui
+# old installer: install.sh / safe-update.sh / hwsniff-x11.service
 ```

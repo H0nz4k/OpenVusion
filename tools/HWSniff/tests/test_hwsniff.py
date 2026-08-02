@@ -8,11 +8,11 @@ from pathlib import Path
 from elatec_uid_tool.ntag import crc_a
 from elatec_uid_tool.protocol import TagRead
 
-from hwsniff.app import HWSniffApp
+from hwsniff.legacy.app import HWSniffApp
 from hwsniff.configuration import DEFAULT_CONFIG, deep_merge, load_config
-from hwsniff.models import AppState
-from hwsniff.state import AppStateMachine
-from hwsniff.ui import UiAction
+from hwsniff.legacy.models import AppState
+from hwsniff.legacy.state import AppStateMachine
+from hwsniff.legacy.ui import UiAction
 
 
 REFERENCE_BLOCK = bytes.fromhex(

@@ -1,0 +1,20 @@
+[Unit]
+Description=OpenVusion HWSniff (Pi Zero 2 W headless GPIO)
+Documentation=file:///opt/Sniff/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hwsniff
+Group=hwsniff
+WorkingDirectory=/opt/Sniff
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/Sniff/.venv/bin/python -m hwsniff --config /etc/hwsniff/config.json
+Restart=on-failure
+RestartSec=2
+# GPIO access via gpio group; TWN4 later via dialout
+SupplementaryGroups=gpio dialout
+
+[Install]
+WantedBy=multi-user.target
