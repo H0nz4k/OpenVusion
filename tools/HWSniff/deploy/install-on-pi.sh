@@ -142,19 +142,43 @@ pip install -e "$INSTALL_ROOT"
 python - <<'PY'
 import hwsniff
 from hwsniff.state import DeviceState, DipMode
-assert DeviceState.SUCCESS_WAIT_ACK
+assert DeviceState.READY
+assert DeviceState.ERROR2
+assert DeviceState.POSITIONING
 assert DipMode.MAIN
-print("import ok:", hwsniff.__file__)
+assert hwsniff.__version__.startswith("2.")
+print("import ok:", hwsniff.__version__, hwsniff.__file__)
 PY
 
-# --- 6) config (never overwrite existing) ----------------------------------
+# --- 6) config (v2 profile required; never silently reuse alpha1 pins) ------
+cp "$INSTALL_ROOT/config/config.gpio.example.json" "$CONFIG_DIR/config.json.example"
 if [[ ! -f "$CONFIG_DIR/config.json" ]]; then
-  log "Installing default config → $CONFIG_DIR/config.json"
+  log "Installing default v2 config → $CONFIG_DIR/config.json"
   cp "$INSTALL_ROOT/config/config.gpio.example.json" "$CONFIG_DIR/config.json"
 else
-  log "Keeping existing $CONFIG_DIR/config.json"
-  cp "$INSTALL_ROOT/config/config.gpio.example.json" "$CONFIG_DIR/config.json.example"
+  log "Checking existing $CONFIG_DIR/config.json for hardware_profile=v2"
+  python3 - <<'PY'
+import json, shutil, sys
+from pathlib import Path
+p = Path("/etc/hwsniff/config.json")
+example = Path("/etc/hwsniff/config.json.example")
+cfg = json.loads(p.read_text(encoding="utf-8"))
+profile = cfg.get("hardware_profile")
+gpio = cfg.get("gpio") or {}
+legacy_start = (gpio.get("buttons") or {}).get("start") == 17
+if profile != "v2" or legacy_start:
+    bak = p.with_suffix(".json.alpha1.bak")
+    shutil.copy2(p, bak)
+    shutil.copy2(example, p)
+    print(f"Replaced legacy/non-v2 config; backup → {bak}")
+else:
+    print("Keeping existing v2 config")
+PY
 fi
+
+# Runtime dirs for lgpio notify pipes + captures
+mkdir -p "$DATA_ROOT/captures" "$DATA_ROOT/export" "$LOG_ROOT"
+chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_ROOT" "$LOG_ROOT"
 
 # --- 7) config hardening (GPIO long-STOP must never poweroff) --------------
 # Remove legacy sudoers from older installs — power is a hardware switch.
@@ -167,12 +191,13 @@ import json
 from pathlib import Path
 p = Path("$CONFIG_DIR/config.json")
 cfg = json.loads(p.read_text(encoding="utf-8"))
+cfg["hardware_profile"] = "v2"
 shutdown = cfg.setdefault("shutdown", {})
 shutdown["enabled"] = False
 boot = cfg.setdefault("boot", {})
 boot.setdefault("shutdown_arm_seconds", 30)
 p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-print("shutdown.enabled forced false (hardware power switch)")
+print("hardware_profile=v2; shutdown.enabled=false")
 PY
 
 # --- 8) systemd unit -------------------------------------------------------
@@ -240,12 +265,19 @@ cat <<EOF
   Test:    sudo -u $SERVICE_USER $INSTALL_ROOT/.venv/bin/python -m hwsniff --gpio-test
 
   Safe bring-up (recommended):
-    1) sudo reboot                          # groups / gpio
-    2) sudo -u hwsniff /opt/Sniff/.venv/bin/python -m hwsniff --gpio-test
-    3) check STOP wiring (GPIO27 not stuck to GND)
-    4) sudo systemctl enable --now hwsniff
+    1) sudo reboot                          # groups / gpio / dialout
+    2) cd /var/lib/hwsniff
+       sudo -u hwsniff /opt/Sniff/.venv/bin/python -m hwsniff --diagnostics
+    3) cd /var/lib/hwsniff
+       sudo -u hwsniff /opt/Sniff/.venv/bin/python -m hwsniff --gpio-test
+    4) DIP1+DIP2 OFF; check STOP wiring (BCM GPIO6 / pin 31)
+    5) sudo systemctl enable --now hwsniff
 
-  Note: Long STOP = reset to MAIN READY (does NOT poweroff).
-        Power is your separate hardware switch.
+  Note: WorkingDirectory=/var/lib/hwsniff (lgpio runtime).
+        Never run GPIO CLI from /opt/Sniff as cwd (not writable).
+        App also chdirs to data_root automatically.
+        STOP = cooperative cancel. Power is a hardware switch.
+        GPIO v2: 29 START, 31 STOP, 32 DIP1, 33 DIP2,
+                 35 GREEN, 36 YELLOW, 37 RED, 38 BLUE.
 ========================================================================
 EOF

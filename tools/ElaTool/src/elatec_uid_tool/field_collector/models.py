@@ -95,9 +95,12 @@ class CollectorConfig:
     export_bundle_root: str | None = "/home/sniffer/capture"
     # One-shot retry / timeout controls (used by capture_one / run_once).
     phase_retry_count: int = 3
-    phase_retry_delay_ms: float = 100.0
+    phase_retry_delay_ms: float = 150.0
     tag_acquire_timeout_seconds: float = 30.0
     capture_timeout_seconds: float = 120.0
+    # Fail-soft raw serial tracer (HWSniff v2 enables explicitly).
+    raw_trace: bool = False
+    confirm_reads: int = 3
     label: str = "field"
     state: str = "field"
     notes: str = ""

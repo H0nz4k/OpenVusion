@@ -105,7 +105,7 @@ def main() -> int:
     if not hwsniff.is_dir() or not elatool.is_dir():
         raise SystemExit(f"Expected tools/HWSniff and tools/ElaTool under {root}")
 
-    version = "1.0-alpha1"
+    version = "2.0.0"
     stamp = dt.datetime.now().strftime("%Y%m%d")
     name = f"hwsniff-gpio-{version}-{stamp}"
     staging = args.out_dir / "_staging" / name

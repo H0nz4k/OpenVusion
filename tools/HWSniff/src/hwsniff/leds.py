@@ -1,4 +1,4 @@
-"""Logical LED control driven by PatternEngine + GPIO."""
+"""Logical LED control driven by PatternEngine + GPIO (HWSniff v2: 4 LEDs)."""
 
 from __future__ import annotations
 
@@ -11,15 +11,14 @@ from .patterns import PatternEngine, PatternKind
 
 @dataclass
 class LedPins:
-    green: int = 5
-    yellow: int = 6
-    red: int = 12
-    blue: int = 13
-    orange: int = 19
+    green: int = 19
+    yellow: int = 16
+    red: int = 26
+    blue: int = 20
     active_high: bool = True
 
 
-LED_NAMES = ("green", "yellow", "red", "blue", "orange")
+LED_NAMES = ("green", "yellow", "red", "blue")
 
 
 class LedController:
@@ -37,20 +36,12 @@ class LedController:
             "yellow": self.pins.yellow,
             "red": self.pins.red,
             "blue": self.pins.blue,
-            "orange": self.pins.orange,
         }
         for pin in self._pin_map.values():
             self.gpio.setup_output(pin, initial=False)
-            self.engine.set(self._name_for_pin(pin), PatternKind.OFF)
 
         for name in LED_NAMES:
             self.engine.set(name, PatternKind.OFF)
-
-    def _name_for_pin(self, pin: int) -> str:
-        for name, p in self._pin_map.items():
-            if p == pin:
-                return name
-        return str(pin)
 
     def set_pattern(
         self,
@@ -58,8 +49,9 @@ class LedController:
         kind: PatternKind | str,
         *,
         on_complete=None,
+        count: int | None = None,
     ) -> None:
-        self.engine.set(name, kind, on_complete=on_complete)
+        self.engine.set(name, kind, on_complete=on_complete, count=count)
 
     def all_off(self) -> None:
         for name in LED_NAMES:
@@ -76,7 +68,6 @@ class LedController:
 
     def tick(self, now: float | None = None) -> dict[str, bool]:
         levels = self.engine.tick(now)
-        # ensure all LEDs present
         for name in LED_NAMES:
             levels.setdefault(name, False)
         self.apply_levels(levels)

@@ -158,6 +158,7 @@ class FieldCollector:
         phase_map = {
             "reader_info": CapturePhase.IDENTIFICATION,
             "tag_detection": CapturePhase.IDENTIFICATION,
+            "uid_confirm": CapturePhase.IDENTIFICATION,
             "identification": CapturePhase.IDENTIFICATION,
             "eeprom": CapturePhase.EEPROM,
             "application": CapturePhase.APPLICATION_BLOCK,
@@ -166,8 +167,10 @@ class FieldCollector:
         }
 
         def on_phase(key: str, detail: str) -> None:
+            # Always forward raw phase key for HWSniff LED progress bar.
+            emit("phase", key=key, detail=detail)
             phase = phase_map.get(key)
-            if on_progress and phase is not None:
+            if on_progress and phase is not None and detail != "started":
                 on_progress(CaptureProgress(phase=phase, message=detail))
 
         data_root = Path(self.config.resolved_data_root())
@@ -181,14 +184,14 @@ class FieldCollector:
             ProbeConfig(
                 port=port,
                 output=Path(self.config.capture_root),
-                raw_trace=False,
+                raw_trace=bool(self.config.raw_trace),
                 tag_timeout=float(self.config.tag_acquire_timeout_seconds),
                 retry_count=int(self.config.phase_retry_count),
                 retry_delay_ms=float(self.config.phase_retry_delay_ms),
                 session_seconds=float(self.config.session_duration_seconds),
                 session_interval_ms=float(self.config.session_interval_ms),
                 poll_interval_seconds=float(self.config.poll_interval_seconds),
-                confirm_reads=3,
+                confirm_reads=int(self.config.confirm_reads),
                 skip_eeprom=not bool(self.config.include_full_dump),
                 skip_application=False,
                 skip_session=not bool(self.config.include_session),

@@ -1,40 +1,62 @@
 {
   "platform": "pi-zero-gpio",
-  "version": "1.0-alpha1",
+  "hardware_profile": "v2",
+  "version": "2.0.0",
   "data_root": "/var/lib/hwsniff",
   "capture_root": "/var/lib/hwsniff/captures",
   "log_root": "/var/log/hwsniff",
   "gpio_prefer_mock": false,
   "gpio": {
     "buttons": {
-      "start": 17,
-      "stop": 27,
+      "start": 5,
+      "stop": 6,
       "active_low": true,
       "pull_up": true,
       "debounce_ms": 50,
       "shutdown_hold_seconds": 3
     },
     "dip": {
-      "dip1": 22,
-      "dip2": 18,
+      "dip1": 12,
+      "dip2": 13,
       "active_low": true,
       "pull_up": true
     },
     "leds": {
-      "green": 5,
-      "yellow": 6,
-      "red": 12,
-      "blue": 13,
-      "orange": 19,
+      "green": 19,
+      "yellow": 16,
+      "red": 26,
+      "blue": 20,
       "active_high": true
     }
   },
   "led_patterns": {
     "slow_ms": 500,
-    "fast_ms": 100,
+    "fast_ms": 250,
     "single_flash_ms": 150,
     "double_flash_ms": 150,
-    "triple_flash_ms": 100
+    "triple_flash_ms": 100,
+    "border_ms": 250,
+    "heartbeat_period_ms": 3000,
+    "heartbeat_pulse_ms": 120,
+    "error3_on_ms": 500,
+    "error3_off_ms": 500,
+    "error3_pause_ms": 1500,
+    "count_blink_ms": 500,
+    "count_blink_count": 5
+  },
+  "timing": {
+    "boot_led_ms": 500,
+    "boot_cycles": 2,
+    "error2_ms": 500,
+    "error3_ms": 500,
+    "error3_pause_ms": 1500,
+    "sweetp_border_ms": 250,
+    "read_progress_blink_ms": 250,
+    "read_complete_ms": 500,
+    "read_complete_count": 5,
+    "wlan_period_seconds": 3,
+    "wlan_pulse_ms": 120,
+    "reader_poll_seconds": 1.0
   },
   "network": {
     "interface": "wlan0",
@@ -42,18 +64,44 @@
   },
   "self_test": {
     "enabled": true,
-    "led_ms": 180
+    "led_ms": 500,
+    "cycles": 2
   },
-  "mock_collector": {
-    "work_seconds": 2.0,
-    "save_seconds": 0.3,
-    "outcome": "SUCCESS"
+  "reader": {
+    "auto_detect": true,
+    "preferred_serial": null,
+    "scan_interval_seconds": 1.0,
+    "handshake_timeout_seconds": 2,
+    "retry_count": 3,
+    "retry_delay_ms": 150,
+    "session_seconds": 2.0,
+    "session_interval_ms": 50,
+    "raw_trace": true,
+    "confirm_reads": 3
   },
-  "mock_sweet_point": {
-    "period_seconds": 1.0
+  "collector": {
+    "use_mock": false,
+    "allow_duplicate": true,
+    "include_full_dump": true,
+    "include_session": true,
+    "session_duration_seconds": 2.0,
+    "session_interval_ms": 50,
+    "phase_retry_count": 3,
+    "phase_retry_delay_ms": 150,
+    "tag_acquire_timeout_seconds": 30,
+    "capture_timeout_seconds": 180,
+    "raw_trace": true,
+    "confirm_reads": 3,
+    "export_bundle_root": "/var/lib/hwsniff/export"
   },
-  "boot": {
-    "shutdown_arm_seconds": 30
+  "sweetp": {
+    "use_mock": false,
+    "green_min": 75,
+    "yellow_min": 56,
+    "borderline_min": 40,
+    "borderline_max": 55,
+    "hysteresis": 3,
+    "read_minimum": 56
   },
   "shutdown": {
     "enabled": false,

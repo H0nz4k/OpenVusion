@@ -145,9 +145,20 @@ class GpioZeroBackend:
         self._input_pull_up.clear()
 
 
-def create_backend(*, prefer_mock: bool = False) -> GpioBackend:
+def create_backend(
+    *,
+    prefer_mock: bool = False,
+    runtime_config: dict | None = None,
+) -> GpioBackend:
     if prefer_mock:
         return MockGpioBackend()
+    # Ensure cwd is writable before gpiozero/lgpio opens notify pipes.
+    try:
+        from .runtime import ensure_runtime_cwd
+
+        ensure_runtime_cwd(runtime_config)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("runtime cwd setup failed: %s", exc)
     try:
         return GpioZeroBackend()
     except Exception as exc:  # noqa: BLE001

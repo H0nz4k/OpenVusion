@@ -227,10 +227,13 @@ class HWSniffTests(unittest.TestCase):
 
     def test_no_com6_hardcode_in_package(self):
         root = Path(__file__).resolve().parents[1] / "src" / "hwsniff"
+        # Diagnostics may mention example device nodes; never hardcode a capture port.
+        allow_tty_mention = {"diagnostics.py"}
         for path in root.rglob("*.py"):
             text = path.read_text(encoding="utf-8")
-            self.assertNotIn("COM6", text)
-            self.assertNotIn("/dev/ttyACM0", text)
+            self.assertNotIn("COM6", text, msg=str(path))
+            if path.name not in allow_tty_mention:
+                self.assertNotIn("/dev/ttyACM0", text, msg=str(path))
 
     def test_systemd_unit_has_restart(self):
         unit = (

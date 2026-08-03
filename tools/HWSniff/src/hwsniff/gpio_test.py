@@ -1,4 +1,4 @@
-"""Interactive / automated GPIO hardware self-test CLI."""
+"""Interactive / automated GPIO hardware self-test CLI (HWSniff v2)."""
 
 from __future__ import annotations
 
@@ -6,12 +6,14 @@ import time
 from typing import Any, Callable
 
 from .buttons import ButtonConfig, ButtonEvent, ButtonWatcher
-from .configuration import DEFAULT_CONFIG, deep_merge
+from .configuration import DEFAULT_CONFIG, GPIO_PHYSICAL, deep_merge
 from .dip import DipReader
 from .gpio_backend import GpioBackend, MockGpioBackend, create_backend
 from .leds import LED_NAMES, LedController, LedPins
 from .network import NetworkMonitor
 from .patterns import PatternKind
+from .reader_monitor import ReaderMonitor
+from . import __version__
 
 
 def run_gpio_test(
@@ -30,43 +32,64 @@ def run_gpio_test(
     dip_cfg = gpio_cfg.get("dip") or {}
     led_cfg = gpio_cfg.get("leds") or {}
     net_cfg = cfg.get("network") or {}
+    self_test = cfg.get("self_test") or {}
 
-    backend = gpio or create_backend(prefer_mock=bool(cfg.get("gpio_prefer_mock")))
-    print("HWSniff GPIO TEST")
+    from .runtime import ensure_runtime_cwd
+
+    ensure_runtime_cwd(cfg)
+    backend = gpio or create_backend(
+        prefer_mock=bool(cfg.get("gpio_prefer_mock")),
+        runtime_config=cfg,
+    )
+    print("HWSniff v2 GPIO TEST")
+    print(f"Version: {__version__}")
     print(f"Backend: {type(backend).__name__}")
+    print("Pin map (BCM -> physical):")
+    mapping = [
+        ("START", int(btn_cfg.get("start", 5)), GPIO_PHYSICAL["start"]),
+        ("STOP", int(btn_cfg.get("stop", 6)), GPIO_PHYSICAL["stop"]),
+        ("DIP1", int(dip_cfg.get("dip1", 12)), GPIO_PHYSICAL["dip1"]),
+        ("DIP2", int(dip_cfg.get("dip2", 13)), GPIO_PHYSICAL["dip2"]),
+        ("GREEN", int(led_cfg.get("green", 19)), GPIO_PHYSICAL["green"]),
+        ("YELLOW", int(led_cfg.get("yellow", 16)), GPIO_PHYSICAL["yellow"]),
+        ("RED", int(led_cfg.get("red", 26)), GPIO_PHYSICAL["red"]),
+        ("BLUE", int(led_cfg.get("blue", 20)), GPIO_PHYSICAL["blue"]),
+    ]
+    for name, bcm, phys in mapping:
+        print(f"  {name:7s} BCM {bcm:2d}  physical pin {phys}")
 
     dip = DipReader(
         backend,
-        dip1_pin=int(dip_cfg.get("dip1", 22)),
-        dip2_pin=int(dip_cfg.get("dip2", 18)),
+        dip1_pin=int(dip_cfg.get("dip1", 12)),
+        dip2_pin=int(dip_cfg.get("dip2", 13)),
         active_low=bool(dip_cfg.get("active_low", True)),
         pull_up=bool(dip_cfg.get("pull_up", True)),
     )
     info = dip.describe()
     print(f"DIP1: {info['dip1']}")
-    print(f"DIP2: {info['dip2']} ({info.get('dip2_note', 'RESERVED')})")
+    print(f"DIP2: {info['dip2']} ({info.get('dip2_note', '')})")
     print(f"MODE: {info['mode'].replace('MODE_', '')}")
 
     leds = LedController(
         backend,
         LedPins(
-            green=int(led_cfg.get("green", 5)),
-            yellow=int(led_cfg.get("yellow", 6)),
-            red=int(led_cfg.get("red", 12)),
-            blue=int(led_cfg.get("blue", 13)),
-            orange=int(led_cfg.get("orange", 19)),
+            green=int(led_cfg.get("green", 19)),
+            yellow=int(led_cfg.get("yellow", 16)),
+            red=int(led_cfg.get("red", 26)),
+            blue=int(led_cfg.get("blue", 20)),
             active_high=bool(led_cfg.get("active_high", True)),
         ),
     )
-    for name in LED_NAMES:
-        leds.all_off()
-        leds.set_pattern(name, PatternKind.ON)
-        end = clock() + 0.2
-        while clock() < end:
+    led_ms = int(self_test.get("led_ms", 500)) / 1000.0
+    cycles = int(self_test.get("cycles", 2))
+    for cycle in range(cycles):
+        print(f"LED self-test cycle {cycle + 1}/{cycles}")
+        for name in LED_NAMES:
+            leds.all_off()
+            leds.set_pattern(name, PatternKind.ON)
             leds.tick()
-            sleep(0.01)
-        label = f"{name.upper()} LED"
-        print(f"{label:14s} OK")
+            sleep(led_ms)
+            print(f"  {name.upper():7s} OK")
     leds.all_off()
     leds.tick()
 
@@ -75,25 +98,34 @@ def run_gpio_test(
         poll_seconds=0,
         clock=clock,
     )
-    net._next = 0  # force immediate
+    net._next = 0
     net.tick()
     print(f"WLAN: {net.status.value.replace('WLAN_', '')}")
     if net.ip:
         print(f"IP: {net.ip}")
 
+    mon = ReaderMonitor(cfg)
+    presence = mon.probe()
+    print(f"READER: {'PRESENT' if presence.present else 'MISSING'}")
+    if presence.port:
+        print(f"READER PORT: {presence.port}")
+    if presence.version:
+        print(f"READER VERSION: {presence.version}")
+    elif presence.error:
+        print(f"READER NOTE: {presence.error}")
+
     if wait_buttons:
         buttons = ButtonWatcher(
             backend,
             ButtonConfig(
-                start_pin=int(btn_cfg.get("start", 17)),
-                stop_pin=int(btn_cfg.get("stop", 27)),
+                start_pin=int(btn_cfg.get("start", 5)),
+                stop_pin=int(btn_cfg.get("stop", 6)),
                 active_low=bool(btn_cfg.get("active_low", True)),
                 pull_up=bool(btn_cfg.get("pull_up", True)),
                 debounce_ms=int(btn_cfg.get("debounce_ms", 50)),
             ),
             clock=clock,
         )
-        # Idle baseline (same as app boot) — stuck/low at first sample is ignored
         _ = buttons.poll()
 
         for expect, label in (
@@ -102,7 +134,6 @@ def run_gpio_test(
         ):
             print(f"Press {label}...")
             if isinstance(backend, MockGpioBackend) and input_fn is None:
-                # Auto-simulate for mock/CI
                 pin = (
                     buttons.config.start_pin
                     if expect == ButtonEvent.START_SHORT

@@ -1,6 +1,8 @@
-# Nasazení HWSniff GPIO na čisté Raspberry Pi
+# Nasazení HWSniff v2 GPIO na čisté Raspberry Pi
 
-Cíl: **Pi Zero 2 W** (nebo jiné Pi s Bookworm), **bez displeje**, jen tlačítka / DIP / LED + později TWN4.
+Cíl: **Pi Zero 2 W** (Bookworm), **bez displeje**, tlačítka / DIP / 4 LED + ELATEC TWN4.
+Capture běží přes sdílený ElaTool `readonly_capture` engine (PCSniff parity).
+Config musí mít `hardware_profile: "v2"` (alpha1 pin mapa se odmítne).
 
 ## Deploy z Windows (doporučeno)
 
@@ -30,7 +32,12 @@ cd tools\HWSniff\deploy
 Pak na Pi (nebo přes ssh):
 
 ```bash
+# lgpio needs a writable cwd — use /var/lib/hwsniff (not /opt/Sniff)
+cd /var/lib/hwsniff
+sudo -u hwsniff /opt/Sniff/.venv/bin/python -m hwsniff --diagnostics
+cd /var/lib/hwsniff
 sudo -u hwsniff /opt/Sniff/.venv/bin/python -m hwsniff --gpio-test
+# DIP1+DIP2 OFF; GPIO v2: 29 START, 31 STOP, 32/33 DIP, 35–38 LEDs
 sudo systemctl enable --now hwsniff
 ```
 
@@ -46,7 +53,7 @@ Potřebuješ: OpenSSH Client (`ssh`, `scp`), Python, na Pi už jednou doběhl Fu
 ## Co balík obsahuje
 
 - `tools/HWSniff` — headless aplikace + systemd unit
-- `tools/ElaTool` — připraveno pro alpha2 capture (alpha1 běží na MockCollector)
+- `tools/ElaTool` — sdílený capture engine (PCSniff / HWSniff v2)
 - `install-on-pi.sh` — bezpečný instalátor
 
 Instalátor **neinstaluje** Xorg, Waveshare, pygame ani framebuffer.

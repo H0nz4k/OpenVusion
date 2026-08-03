@@ -1,124 +1,146 @@
-# OpenVusion HWSniff — Pi Zero 2 W (v1.0-alpha1)
+# OpenVusion HWSniff v2 — Pi Zero 2 W
 
 **Primary target:** Raspberry Pi Zero 2 W **without display**.
 
 - ELATEC TWN4 (USB OTG)
 - 2 buttons: START / STOP
-- 2-position DIP: DIP1 / DIP2
-- 5 LEDs: green / yellow / red / blue / orange
+- 2 DIP switches: DIP1 / DIP2
+- 4 LEDs: green / yellow / red / blue
 - Headless Python systemd service (GPIO only)
+- **Real capture** via shared ElaTool `readonly_capture` engine (PCSniff parity)
 
-**Not used on this platform:** LCD, touchscreen, Xorg, xinit, pygame, SDL, framebuffer, Waveshare.
+**Not used:** LCD, touchscreen, Xorg, xinit, pygame, SDL, framebuffer, Waveshare.
 
-Legacy Waveshare 3.5" touch UI remains under `hwsniff.legacy` (`python -m hwsniff --legacy-ui`).
+Legacy Waveshare touch UI remains under `hwsniff.legacy` (`python -m hwsniff --legacy-ui`).
 
-## GPIO map
+Config **must** include `hardware_profile: "v2"`. Alpha1 pin maps are rejected.
 
-| Function | BCM GPIO | Physical pin | Notes |
-|----------|----------|--------------|--------|
-| START    | 17       | 11           | to GND, pull-up, active low |
-| STOP     | 27       | 13           | to GND, pull-up, active low |
-| DIP1     | 22       | 15           | to GND, pull-up; ON=LOW |
-| DIP2     | 18       | 12           | to GND, pull-up; ON=LOW |
-| GREEN    | 5        | 29           | GPIO→330Ω→LED→GND, active high |
-| YELLOW   | 6        | 31           | same |
-| RED      | 12       | 32           | same |
-| BLUE     | 13       | 33           | WLAN status (independent) |
-| ORANGE   | 19       | 35           | Sweet Point medium quality |
+## GPIO map (v2)
+
+| Function | Physical pin | BCM GPIO | Notes |
+|----------|-------------:|---------:|--------|
+| START    | **29** | 5  | switch → GND, pull-up, active-low |
+| GND      | 30 | — | |
+| STOP     | **31** | 6  | switch → GND, pull-up, active-low |
+| DIP1     | **32** | 12 | switch → GND, pull-up, active-low |
+| DIP2     | **33** | 13 | switch → GND, pull-up, active-low |
+| GND      | 34 | — | |
+| GREEN    | **35** | 19 | GPIO → 330 Ω → LED → GND, active-high |
+| YELLOW   | **36** | 16 | same |
+| RED      | **37** | 26 | same |
+| BLUE     | **38** | 20 | WLAN heartbeat |
+| GND      | 39 | — | |
+| RESERVE  | 40 | 21 | unused |
 
 ```text
-GPIO17 ── START ── GND
-GPIO27 ── STOP  ── GND
-GPIO22 ── DIP1 ── GND
-GPIO18 ── DIP2 ── GND
-GPIO5  ── 330R ── GREEN LED ── GND
-GPIO6  ── 330R ── YELLOW LED ── GND
-GPIO12 ── 330R ── RED LED ── GND
-GPIO13 ── 330R ── BLUE LED ── GND
-GPIO19 ── 330R ── ORANGE LED ── GND
+GPIO5  / pin 29 ── START ── GND
+GPIO6  / pin 31 ── STOP  ── GND
+GPIO12 / pin 32 ── DIP1 ── GND
+GPIO13 / pin 33 ── DIP2 ── GND
+GPIO19 / pin 35 ── 330Ω ── GREEN  ── GND
+GPIO16 / pin 36 ── 330Ω ── YELLOW ── GND
+GPIO26 / pin 37 ── 330Ω ── RED    ── GND
+GPIO20 / pin 38 ── 330Ω ── BLUE   ── GND
 ```
-
-## LED meanings
-
-### MAIN MODE (DIP1 OFF)
-
-| LED | Meaning |
-|-----|---------|
-| Green | READY (solid) / SUCCESS_WAIT_ACK (with orange) / cancel confirm |
-| Yellow | WAITING (slow) / READING (fast) / SAVING (solid) |
-| Red | ERROR / PARTIAL (slow) / cancel (single flash) |
-| Blue | WLAN offline / connecting (slow) / connected |
-| Orange | SUCCESS_WAIT_ACK (solid with green); otherwise off |
-
-### SWEET POINT MODE (DIP1 ON)
-
-| LED | Meaning |
-|-----|---------|
-| Green | high quality |
-| Orange | medium quality |
-| Red | low quality |
-| Yellow | always OFF |
-| Blue | WLAN (unchanged) |
-
-No tag → green / orange / red all OFF.
 
 ## DIP modes
 
-| DIP1 | Mode |
-|------|------|
-| OFF | `MODE_MAIN` — capture workflow |
-| ON | `MODE_SWEET_POINT` — quality indication (MockSweetPoint in alpha1) |
+| DIP1 | DIP2 | Result |
+|------|------|--------|
+| OFF | OFF | MAIN |
+| ON  | OFF | SWEETP |
+| OFF | ON  | ERROR3 |
+| ON  | ON  | ERROR3 |
 
-DIP2 is **RESERVED** (ignored). DIP changes apply immediately and take priority over START.
+Boot requires DIP1 OFF + DIP2 OFF, otherwise ERROR3. DIP is monitored continuously; ERROR3 recovers without restart.
 
-## Install / deploy (Pi Zero 2 W)
+## States & LEDs
+
+| State | LEDs |
+|-------|------|
+| BOOT | Self-test 2×: GREEN → YELLOW → RED → BLUE (500 ms each) |
+| READY | GREEN ON |
+| ERROR1 | RED ON (fatal internal / SAVE failure) |
+| ERROR2 | GREEN+RED sync 1 Hz (TWN4 missing; hotplug → READY) |
+| ERROR3 | RED 3× 0.5 s then 1.5 s pause (invalid DIP) |
+| SWEETP / POSITIONING | score bands (below) |
+| READ | 6-step G/Y/R progress bar (not error colours) |
+| READ COMPLETE | G+Y+R blink together 5× — tag may be removed |
+| SAVE | YELLOW ON → READY GREEN on success / ERROR1 on failure |
+| WLAN | BLUE short pulse every 3 s when connected |
+
+### SweetP / POSITIONING bands
+
+| Score | LEDs |
+|------:|------|
+| 75–100 | GREEN |
+| 56–74 | YELLOW |
+| 40–55 | YELLOW/RED alternate 250 ms |
+| 0–39 | RED |
+| no tag | all off |
+
+Hysteresis default ±3. Second START (READ) only if score ≥ 56.
+
+### READ progress bar (6 phases)
+
+| Step | Phase | LEDs |
+|-----:|-------|------|
+| 1 | UID confirm | GREEN blink |
+| 2 | Identification | GREEN solid |
+| 3 | EEPROM | GREEN solid + YELLOW blink |
+| 4 | Application | GREEN + YELLOW solid |
+| 5 | Session | GREEN + YELLOW solid + RED blink |
+| 6 | Verification | GREEN + YELLOW + RED solid |
+
+## MAIN workflow
+
+```text
+READY → START → POSITIONING (live SweetP)
+      → START (score ≥ 56) → READ (6 phases)
+      → G+Y+R ×5 → SAVE → READY
+STOP  → cooperative cancel → RED flash → READY
+```
+
+## Capture engine
+
+HWSniff does **not** reimplement TWN4 protocol. It drives:
+
+`ElaTool readonly_capture.CaptureProbe` ← same engine as PCSniff
+
+One READ = one port, one tag, one locked UID. Directory stays `*_UID-pending` until serial/raw tracer close, then rename.
+
+## Install / deploy
 
 See **[deploy/README.md](deploy/README.md)**.
 
 ```powershell
-# Windows — daily code update over SSH:
 cd tools\HWSniff\deploy
-copy deploy.env.example deploy.env   # once: set HWSNIFF_PI=user@IP
-.\deploy-to-pi.ps1                   # Quick sync + restart
-
-# First install on a clean Pi:
-.\deploy-to-pi.ps1 -Target pi@IP -Mode Full
+.\deploy-to-pi.ps1
 ```
 
-This installs **no** Xorg/Waveshare/pygame.
-
-## GPIO test
-
 ```bash
+# On Pi after install (cwd must be writable for lgpio — app also chdirs itself):
+cd /var/lib/hwsniff
+sudo -u hwsniff /opt/Sniff/.venv/bin/python -m hwsniff --diagnostics
+cd /var/lib/hwsniff
 sudo -u hwsniff /opt/Sniff/.venv/bin/python -m hwsniff --gpio-test
-# on a PC / CI:
-python -m hwsniff --gpio-test --mock-gpio
-```
-
-## Run service
-
-```bash
 sudo systemctl enable --now hwsniff
 journalctl -u hwsniff -f
 ```
 
-Unit: `systemd/hwsniff-gpio.service` (installed as `hwsniff.service`).
+Service: `WorkingDirectory=/var/lib/hwsniff` (lgpio runtime files).  
+CLI also calls `ensure_runtime_cwd()` → `/var/lib/hwsniff` so `/opt/Sniff` never needs write access.  
+User `hwsniff` in groups `gpio` + `dialout`.
 
-## Alpha1 behaviour
+## CLI
 
-**MAIN**
-- READY = green solid
-- START → WAITING (yellow slow); START again → mock READING → SAVING → `SUCCESS_WAIT_ACK`
-- `SUCCESS_WAIT_ACK`: green+orange solid, no timeout; START/STOP = ACK → health check → READY (does not start capture)
-- Short STOP / long STOP (3 s) during a cycle → abort → red single → green confirm → READY
-- Long STOP = „zastav vše, od začátku MAIN“ → READY (power vypíná samostatný hardwarový spínač, ne GPIO)
-
-**SWEET POINT**
-- DIP1 ON enters immediately; MAIN capture cannot start; START ignored
-- MockSweetPoint cycles none / low / medium / high for LED validation
-- DIP1 OFF → stop monitoring, health check, MAIN READY
-
-Collector remains `MockCollector` (no real ElaTool capture in alpha1).
+```bash
+python -m hwsniff --config /etc/hwsniff/config.json
+python -m hwsniff --gpio-test
+python -m hwsniff --diagnostics
+python -m hwsniff --mock-gpio          # CI / no Pi
+python -m hwsniff --legacy-ui          # Waveshare UI
+```
 
 ## Tests
 
@@ -127,9 +149,13 @@ cd tools/HWSniff
 PYTHONPATH=src:../ElaTool/src python -m unittest discover -s tests -v
 ```
 
-## Legacy touchscreen
+Also run ElaTool / PCSniff regression after engine changes:
 
 ```bash
-python -m hwsniff --legacy-ui
-# old installer: install.sh / safe-update.sh / hwsniff-x11.service
+cd tools/ElaTool && PYTHONPATH=src python -m unittest discover -s tests -v
+cd tools/PCSniff && PYTHONPATH=src:../ElaTool/src python -m unittest discover -s tests -v
 ```
+
+## Physical acceptance checklist
+
+See end of agent report / `HW/HWSniff_v2_HW_SW_specifikace.md` — items A–T (boot, ERROR2 hotplug, SweetP, POSITIONING, READ progress, SAVE, STOP, DIP2).

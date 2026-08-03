@@ -16,6 +16,11 @@ class PatternKind(str, Enum):
     SINGLE = "single"
     DOUBLE = "double"
     TRIPLE = "triple"
+    HEARTBEAT = "heartbeat"  # short pulse every period (WLAN)
+    ERROR3 = "error3"  # 3× blink then longer pause
+    PHASE_A = "phase_a"  # first half of border period
+    PHASE_B = "phase_b"  # second half of border period
+    COUNT_BLINK = "count_blink"  # N full ON/OFF cycles then complete
 
 
 @dataclass
@@ -24,15 +29,24 @@ class _Channel:
     t0: float = 0.0
     finished: bool = False
     on_complete: Callable[[], None] | None = None
+    count: int | None = None
 
 
 @dataclass
 class PatternTimings:
     slow_ms: int = 500
-    fast_ms: int = 100
+    fast_ms: int = 250
     single_flash_ms: int = 150
     double_flash_ms: int = 150
     triple_flash_ms: int = 100
+    border_ms: int = 250
+    heartbeat_period_ms: int = 3000
+    heartbeat_pulse_ms: int = 120
+    error3_on_ms: int = 500
+    error3_off_ms: int = 500
+    error3_pause_ms: int = 1500
+    count_blink_ms: int = 500
+    count_blink_count: int = 5
 
 
 @dataclass
@@ -47,6 +61,7 @@ class PatternEngine:
         kind: PatternKind | str,
         *,
         on_complete: Callable[[], None] | None = None,
+        count: int | None = None,
     ) -> None:
         k = PatternKind(kind) if not isinstance(kind, PatternKind) else kind
         self._channels[name] = _Channel(
@@ -54,6 +69,7 @@ class PatternEngine:
             t0=self._clock(),
             finished=False,
             on_complete=on_complete,
+            count=count,
         )
 
     def clear(self, name: str) -> None:
@@ -92,15 +108,12 @@ class PatternEngine:
             period = max(1, t.fast_ms * 2)
             return (elapsed_ms % period) < t.fast_ms, False
         if ch.kind == PatternKind.SINGLE:
-            # one short ON then finished OFF
             step = max(1, t.single_flash_ms)
             if elapsed_ms < step:
                 return True, False
             return False, True
         if ch.kind == PatternKind.DOUBLE:
-            # ON, OFF, ON, then finished OFF
             step = max(1, t.double_flash_ms)
-            # 0-step ON, step-2step OFF, 2step-3step ON, then done
             if elapsed_ms < step:
                 return True, False
             if elapsed_ms < 2 * step:
@@ -110,8 +123,40 @@ class PatternEngine:
             return False, True
         if ch.kind == PatternKind.TRIPLE:
             step = max(1, t.triple_flash_ms)
-            # 3× (ON step + OFF step) = 6 steps
             total = 6 * step
+            if elapsed_ms >= total:
+                return False, True
+            phase = int(elapsed_ms // step) % 2
+            return phase == 0, False
+        if ch.kind == PatternKind.HEARTBEAT:
+            period = max(1, t.heartbeat_period_ms)
+            pulse = max(1, min(t.heartbeat_pulse_ms, period - 1))
+            return (elapsed_ms % period) < pulse, False
+        if ch.kind == PatternKind.ERROR3:
+            on_ms = max(1, t.error3_on_ms)
+            off_ms = max(1, t.error3_off_ms)
+            pause = max(1, t.error3_pause_ms)
+            # 3 × (ON + OFF) then pause OFF
+            blink_span = 3 * (on_ms + off_ms)
+            cycle = blink_span + pause
+            pos = elapsed_ms % cycle
+            if pos >= blink_span:
+                return False, False
+            step = on_ms + off_ms
+            within = pos % step
+            return within < on_ms, False
+        if ch.kind == PatternKind.PHASE_A:
+            period = max(1, t.border_ms * 2)
+            return (elapsed_ms % period) < t.border_ms, False
+        if ch.kind == PatternKind.PHASE_B:
+            period = max(1, t.border_ms * 2)
+            return (elapsed_ms % period) >= t.border_ms, False
+        if ch.kind == PatternKind.COUNT_BLINK:
+            step = max(1, t.count_blink_ms)
+            n = ch.count if ch.count is not None else t.count_blink_count
+            n = max(1, int(n))
+            # Each cycle = ON step + OFF step
+            total = n * 2 * step
             if elapsed_ms >= total:
                 return False, True
             phase = int(elapsed_ms // step) % 2

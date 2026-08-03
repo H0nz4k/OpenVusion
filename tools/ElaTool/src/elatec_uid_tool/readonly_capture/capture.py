@@ -216,6 +216,17 @@ class CaptureProbe:
         if self._on_event is not None:
             self._on_event(name, payload)
 
+    def _phase_begin(self, phase_key: str) -> None:
+        """Notify consumers that a capture phase is starting (HWSniff LED progress)."""
+        self._fire_event("phase_started", phase=phase_key)
+        if self._on_phase is not None:
+            self._on_phase(phase_key, "started")
+
+    def _phase_end(self, phase_key: str, status: str) -> None:
+        self._fire_event("phase_complete", phase=phase_key, status=status)
+        if self._on_phase is not None:
+            self._on_phase(phase_key, status)
+
     def _emit(self, line: str) -> None:
         if not self.config.quiet:
             if self._stdout is not None:
@@ -232,11 +243,7 @@ class CaptureProbe:
         def on_trace_error(message: str, exc: BaseException) -> None:
             if store is None:
                 return
-            code = (
-                "raw_trace_error"
-                if isinstance(exc, (FileNotFoundError, OSError))
-                else "raw_trace_error"
-            )
+            code = "raw_trace_error"
             store.add_error(
                 phase="raw_trace",
                 code=code,
@@ -244,9 +251,18 @@ class CaptureProbe:
                 details={"path": str(path)},
             )
 
-        self._tracer = RawSerialTracer(path, on_error=on_trace_error)
-        transport = self._client.transport
-        transport.exchange = self._tracer.wrap_exchange(transport.exchange)
+        try:
+            self._tracer = RawSerialTracer(path, on_error=on_trace_error)
+            transport = getattr(self._client, "transport", None)
+            if transport is None or not hasattr(transport, "exchange"):
+                raise AttributeError("client has no transport.exchange for raw trace")
+            transport.exchange = self._tracer.wrap_exchange(transport.exchange)
+        except Exception as exc:  # noqa: BLE001 — fail-soft: never abort capture
+            self._tracer = None
+            on_trace_error(f"raw tracer disabled: {exc}", exc)
+            if store is not None:
+                store.append_event("raw_trace_disabled", error=str(exc))
+            return
         if store is not None:
             store._track(path)  # noqa: SLF001
             store.append_event("raw_trace_enabled", path=str(path))
@@ -501,21 +517,45 @@ class CaptureProbe:
         """Exactly one capture for the locked UID. No wait-for-removal."""
         if self._capture_ran:
             raise RuntimeError("Capture already ran")
-        self._confirm_uid()
-        self._run_identification()
+        steps: list[tuple[str, Callable[[], None]]] = [
+            ("uid_confirm", self._confirm_uid),
+            ("identification", self._run_identification),
+        ]
         if self.config.skip_eeprom:
-            self._skip_phase("eeprom", "skipped by --skip-eeprom")
+            steps.append(
+                ("eeprom", lambda: self._skip_phase("eeprom", "skipped by --skip-eeprom"))
+            )
         else:
-            self._run_eeprom()
+            steps.append(("eeprom", self._run_eeprom))
         if self.config.skip_application:
-            self._skip_phase("application", "skipped by --skip-application")
+            steps.append(
+                (
+                    "application",
+                    lambda: self._skip_phase(
+                        "application", "skipped by --skip-application"
+                    ),
+                )
+            )
         else:
-            self._run_application()
+            steps.append(("application", self._run_application))
         if self.config.skip_session:
-            self._skip_phase("session", "skipped by --skip-session")
+            steps.append(
+                (
+                    "session",
+                    lambda: self._skip_phase("session", "skipped by --skip-session"),
+                )
+            )
         else:
-            self._run_session()
-        self._run_verification()
+            steps.append(("session", self._run_session))
+        steps.append(("verification", self._run_verification))
+
+        for phase_key, fn in steps:
+            if self._stopping():
+                self._aborted = True
+                self._fire_event("capture_aborted", phase=phase_key)
+                return
+            self._phase_begin(phase_key)
+            fn()
 
     def _skip_phase(self, name: str, reason: str) -> None:
         assert self._store is not None
@@ -528,6 +568,7 @@ class CaptureProbe:
             "session": "Session ...........",
         }
         self._phase_banner(titles.get(name, name), "SKIPPED")
+        self._phase_end(name, PhaseStatus.SKIPPED.value)
 
     def _confirm_uid(self) -> None:
         store = self._store
@@ -595,6 +636,7 @@ class CaptureProbe:
         self._emit(
             f"    UID confirm ........ {status.value.upper()} ({ok_count}/{needed})"
         )
+        self._phase_end("uid_confirm", status.value)
 
     def _run_identification(self) -> None:
         store = self._store
@@ -634,6 +676,7 @@ class CaptureProbe:
             store.update_summary(tag_type=self._format_tag_type(), identification=data)
             latency = attempts[-1]["latency_ms"] if attempts else 0
             self._phase_banner("Identification", f".... OK ({latency:.0f} ms)")
+            self._phase_end("identification", PhaseStatus.OK.value)
             return
 
         # Non-NTAG or GET_VERSION unsupported — still continue other phases carefully.
@@ -655,6 +698,7 @@ class CaptureProbe:
             message=err,
         )
         self._phase_banner("Identification", f".... {status.value.upper()}")
+        self._phase_end("identification", status.value)
 
     def _run_eeprom(self) -> None:
         store = self._store
@@ -666,6 +710,7 @@ class CaptureProbe:
                 PhaseStatus.UNSUPPORTED.value,
             )
             self._phase_banner("EEPROM ............", "UNSUPPORTED")
+            self._phase_end("eeprom", PhaseStatus.UNSUPPORTED.value)
             return
 
         ntag = NtagI2CPlus(self._client)
@@ -674,9 +719,21 @@ class CaptureProbe:
         ok_chunks = 0
         total_chunks = 0
         page = FULL_DUMP_START_PAGE
+        planned_chunks = (
+            (FULL_DUMP_END_PAGE - FULL_DUMP_START_PAGE) // FULL_DUMP_CHUNK_PAGES
+        ) + 1
         while page <= FULL_DUMP_END_PAGE:
+            if self._stopping():
+                self._aborted = True
+                break
             end = min(page + FULL_DUMP_CHUNK_PAGES - 1, FULL_DUMP_END_PAGE)
             total_chunks += 1
+            self._fire_event(
+                "phase_progress",
+                phase="eeprom",
+                current=total_chunks,
+                total=planned_chunks,
+            )
 
             def chunk_op(start: int = page, stop: int = end) -> bytes:
                 self._reselect_same_uid()
@@ -764,6 +821,7 @@ class CaptureProbe:
             "EEPROM ............",
             f"{status.value.upper()}, {ok_chunks}/{total_chunks} chunks",
         )
+        self._phase_end("eeprom", status.value)
 
     def _run_application(self) -> None:
         store = self._store
@@ -808,6 +866,7 @@ class CaptureProbe:
             store.write_phase("application", data, PhaseStatus.OK.value)
             latency = attempts[-1]["latency_ms"] if attempts else 0
             self._phase_banner("Application .......", f"OK ({latency:.0f} ms)")
+            self._phase_end("application", PhaseStatus.OK.value)
             return
 
         store.write_phase(
@@ -824,6 +883,7 @@ class CaptureProbe:
             "Application .......",
             f"{result.status.value.upper()} after {len(attempts)} retries",
         )
+        self._phase_end("application", result.status.value)
 
     def _try_page00_fallback(self) -> None:
         store = self._store
@@ -850,6 +910,7 @@ class CaptureProbe:
                 PhaseStatus.PARTIAL.value,
             )
             self._phase_banner("Application .......", "PARTIAL (page 00 only)")
+            self._phase_end("application", PhaseStatus.PARTIAL.value)
             return
         store.write_phase(
             "application",
@@ -861,6 +922,7 @@ class CaptureProbe:
             PhaseStatus.UNSUPPORTED.value,
         )
         self._phase_banner("Application .......", "UNSUPPORTED")
+        self._phase_end("application", PhaseStatus.UNSUPPORTED.value)
 
     def _run_session(self) -> None:
         store = self._store
@@ -872,6 +934,7 @@ class CaptureProbe:
                 PhaseStatus.UNSUPPORTED.value,
             )
             self._phase_banner("Session ...........", "UNSUPPORTED")
+            self._phase_end("session", PhaseStatus.UNSUPPORTED.value)
             return
 
         ntag = NtagI2CPlus(self._client)
@@ -881,6 +944,9 @@ class CaptureProbe:
         errors = 0
 
         while time.monotonic() < deadline:
+            if self._stopping():
+                self._aborted = True
+                break
             t0 = time.monotonic()
             try:
                 self._reselect_same_uid()
@@ -941,6 +1007,7 @@ class CaptureProbe:
             "Session ...........",
             f"{status.value.upper()}, {len(samples)} samples",
         )
+        self._phase_end("session", status.value)
 
     def _run_verification(self) -> None:
         store = self._store
@@ -1006,6 +1073,7 @@ class CaptureProbe:
 
         store.write_phase("verification", {"checks": checks}, status.value)
         self._phase_banner("Verification ......", status.value.upper())
+        self._phase_end("verification", status.value)
 
     def _print_result(self, overall: OverallStatus) -> None:
         store = self._store

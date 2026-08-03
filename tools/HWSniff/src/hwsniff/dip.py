@@ -1,4 +1,4 @@
-"""DIP switch reader → MAIN / SWEET_POINT (DIP2 reserved)."""
+"""DIP switch reader → MAIN / SWEETP / ERROR3."""
 
 from __future__ import annotations
 
@@ -7,9 +7,10 @@ from .state import DipMode
 
 
 def dip_mode_from_levels(*, dip1_on: bool, dip2_on: bool = False) -> DipMode:
-    """DIP1 selects mode; DIP2 is ignored (reserved)."""
-    del dip2_on  # reserved for a future feature
-    return DipMode.SWEET_POINT if dip1_on else DipMode.MAIN
+    """DIP2 ON is always ERROR3. DIP1 selects MAIN vs SWEETP when DIP2 is OFF."""
+    if dip2_on:
+        return DipMode.ERROR3
+    return DipMode.SWEETP if dip1_on else DipMode.MAIN
 
 
 class DipReader:
@@ -17,8 +18,8 @@ class DipReader:
         self,
         gpio: GpioBackend,
         *,
-        dip1_pin: int = 22,
-        dip2_pin: int = 18,
+        dip1_pin: int = 12,
+        dip2_pin: int = 13,
         active_low: bool = True,
         pull_up: bool = True,
     ) -> None:
@@ -47,6 +48,6 @@ class DipReader:
         return {
             "dip1": "ON" if d1 else "OFF",
             "dip2": "ON" if d2 else "OFF",
-            "dip2_note": "RESERVED",
+            "dip2_note": "ERROR3 when ON" if d2 else "RESERVED (OFF = OK)",
             "mode": mode.value,
         }

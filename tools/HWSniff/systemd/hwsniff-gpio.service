@@ -1,5 +1,5 @@
 [Unit]
-Description=OpenVusion HWSniff (Pi Zero 2 W headless GPIO)
+Description=OpenVusion HWSniff v2 (Pi Zero 2 W headless GPIO)
 Documentation=file:///opt/Sniff/README.md
 After=network-online.target
 Wants=network-online.target
@@ -8,12 +8,14 @@ Wants=network-online.target
 Type=simple
 User=hwsniff
 Group=hwsniff
-WorkingDirectory=/opt/Sniff
+# Writable runtime dir — lgpio needs notify pipes here (not under /opt/Sniff).
+WorkingDirectory=/var/lib/hwsniff
 Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/var/lib/hwsniff
 ExecStart=/opt/Sniff/.venv/bin/python -m hwsniff --config /etc/hwsniff/config.json
 Restart=on-failure
 RestartSec=2
-# GPIO access via gpio group; TWN4 later via dialout
+# GPIO via gpio group; TWN4 USB serial via dialout
 SupplementaryGroups=gpio dialout
 
 [Install]
