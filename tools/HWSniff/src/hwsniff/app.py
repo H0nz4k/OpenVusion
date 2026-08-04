@@ -555,6 +555,7 @@ class HeadlessApp:
         """Monitor TWN4 presence. Return True if transitioned to ERROR2."""
         st = self.runtime.device_state
         # SAVE / READ_COMPLETE: reader already closed — disconnect must not abort SAVE.
+        # UPLOAD: UART not required.
         if st in (
             DeviceState.ERROR1,
             DeviceState.ERROR2,
@@ -564,6 +565,7 @@ class HeadlessApp:
             DeviceState.SAVE,
             DeviceState.READ_COMPLETE,
             DeviceState.CANCELLED,
+            DeviceState.UPLOAD,
         ):
             return False
         if st not in (

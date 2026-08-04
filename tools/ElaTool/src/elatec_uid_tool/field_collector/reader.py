@@ -153,11 +153,21 @@ def handshake_reader(
     except (ElatecError, SerialCommunicationError, OSError, ValueError) as exc:
         err = str(exc)
         lower = err.lower()
-        if "busy" in lower or "resource temporarily unavailable" in lower or "errno 16" in lower:
-            log.warning(
-                "Reader port %s busy — stop hwsniff.service before manual UART tests",
+        # Exclusive open failed → another process (often this app) already holds UART.
+        # Treat as present so hotplug does not flap ERROR2 while SweetP/capture runs.
+        if (
+            "busy" in lower
+            or "resource temporarily unavailable" in lower
+            or "errno 16" in lower
+            or "access is denied" in lower
+            or "permission denied" in lower
+        ):
+            log.info(
+                "Reader port %s in use (treat as present). "
+                "For manual UART tests: sudo systemctl stop hwsniff",
                 device,
             )
+            return True, "port_busy"
         return False, err
 
 
