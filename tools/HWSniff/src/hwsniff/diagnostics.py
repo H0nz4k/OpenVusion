@@ -103,7 +103,7 @@ def run_diagnostics(config: dict[str, Any] | None = None) -> int:
         print(f"  DIP mode:         {info['mode']}")
 
         print("  GPIO map:")
-        print(f"    START  BCM {btn.get('start', 5):2}  physical {GPIO_PHYSICAL['start']}")
+        print(f"    START  BCM {btn.get('start', 21):2}  physical {GPIO_PHYSICAL['start']}")
         print(f"    STOP   BCM {btn.get('stop', 6):2}  physical {GPIO_PHYSICAL['stop']}")
         print(f"    GREEN  BCM {leds.get('green', 19):2}  physical {GPIO_PHYSICAL['green']}")
         print(f"    YELLOW BCM {leds.get('yellow', 16):2}  physical {GPIO_PHYSICAL['yellow']}")

@@ -8,7 +8,7 @@
   "gpio_prefer_mock": false,
   "gpio": {
     "buttons": {
-      "start": 5,
+      "start": 21,
       "stop": 6,
       "active_low": true,
       "pull_up": true,
@@ -69,7 +69,7 @@
   },
   "reader": {
     "auto_detect": true,
-    "preferred_serial": null,
+    "preferred_serial": "/dev/serial0",
     "scan_interval_seconds": 1.0,
     "handshake_timeout_seconds": 2,
     "retry_count": 3,
@@ -92,7 +92,9 @@
     "capture_timeout_seconds": 180,
     "raw_trace": true,
     "confirm_reads": 3,
-    "export_bundle_root": "/var/lib/hwsniff/export"
+    "export_bundle_root": "/var/lib/hwsniff/export",
+    "export_bundle_mirror_root": "/home/sniffer/exports",
+    "include_logs_in_bundle": true
   },
   "sweetp": {
     "use_mock": false,

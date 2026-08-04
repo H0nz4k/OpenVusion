@@ -293,6 +293,13 @@ class CaptureCollector:
                 export_bundle_root=coll_cfg.get(
                     "export_bundle_root", "/var/lib/hwsniff/export"
                 ),
+                export_bundle_mirror_root=coll_cfg.get(
+                    "export_bundle_mirror_root"
+                ),
+                include_logs_in_bundle=bool(
+                    coll_cfg.get("include_logs_in_bundle", False)
+                ),
+                log_root=self.config.get("log_root"),
                 phase_retry_count=int(
                     coll_cfg.get(
                         "phase_retry_count", reader_cfg.get("retry_count", 3)

@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import logging
 import os
 import re
+from pathlib import Path
 from typing import Any, Callable
 
 from ..protocol import ElatecError, SerialCommunicationError, SimpleProtocolClient
 from .models import ReaderCandidate
 
+log = logging.getLogger(__name__)
+
 ELATEC_VID = 0x09D8
 ALIAS_PATH = "/dev/hwsniff-reader"
+UART_ALIAS_PATH = "/dev/serial0"
 
 
 def _score_candidate(item: Any) -> int:
@@ -27,14 +32,43 @@ def _score_candidate(item: Any) -> int:
         score += 40
     if re.search(r"ttyacm|ttyusb", device):
         score += 10
+    # Pi GPIO UART aliases (TWN4 Simple Protocol on COM1 @ 9600 8N1)
+    if device in ("/dev/serial0", "serial0") or device.endswith("/serial0"):
+        score += 35
+    elif re.search(r"ttys0|ttyama0|ttyama1", device):
+        score += 20
     if device.endswith("hwsniff-reader") or device == ALIAS_PATH:
         score += 30
     return score
 
 
+def _looks_like_device_path(value: str) -> bool:
+    return value.startswith("/dev/") or value.upper().startswith("COM")
+
+
+def matches_preferred(candidate: ReaderCandidate, preferred: str | None) -> bool:
+    """Match USB serial number or device path (incl. resolved symlink)."""
+    if not preferred:
+        return False
+    pref = preferred.strip()
+    if not pref:
+        return False
+    if (candidate.serial_number or "") == pref:
+        return True
+    if candidate.device == pref:
+        return True
+    try:
+        if Path(candidate.device).resolve() == Path(pref).resolve():
+            return True
+    except OSError:
+        pass
+    return False
+
+
 def enumerate_reader_candidates(
     *,
     list_ports: Callable[[], list[Any]] | None = None,
+    preferred_serial: str | None = None,
 ) -> list[ReaderCandidate]:
     if list_ports is None:
         from serial.tools import list_ports
@@ -59,16 +93,44 @@ def enumerate_reader_candidates(
                 score=score,
             )
         )
-    # Prefer alias if present on filesystem even if not in comports.
-    if os.path.exists(ALIAS_PATH) and not any(c.device == ALIAS_PATH for c in candidates):
+
+    def _ensure_path_candidate(device: str, description: str, score: int) -> None:
+        if not os.path.exists(device):
+            return
+        if any(c.device == device for c in candidates):
+            return
+        # Also skip if an existing candidate resolves to the same node.
+        try:
+            resolved = Path(device).resolve()
+            for c in candidates:
+                try:
+                    if Path(c.device).resolve() == resolved:
+                        return
+                except OSError:
+                    continue
+        except OSError:
+            pass
         candidates.append(
             ReaderCandidate(
-                device=ALIAS_PATH,
-                description="hwsniff udev alias",
+                device=device,
+                description=description,
                 hwid="",
-                score=50,
+                score=score,
             )
         )
+
+    # Prefer alias if present on filesystem even if not in comports.
+    _ensure_path_candidate(ALIAS_PATH, "hwsniff udev alias", 50)
+    _ensure_path_candidate(UART_ALIAS_PATH, "Pi GPIO UART (/dev/serial0)", 45)
+
+    # Explicit preferred device path (e.g. /dev/serial0) always considered.
+    if preferred_serial and _looks_like_device_path(preferred_serial):
+        _ensure_path_candidate(
+            preferred_serial.strip(),
+            "preferred serial device",
+            80,
+        )
+
     candidates.sort(key=lambda c: (-c.score, c.device))
     return candidates
 
@@ -89,7 +151,14 @@ def handshake_reader(
             client.search_tag()
         return True, None
     except (ElatecError, SerialCommunicationError, OSError, ValueError) as exc:
-        return False, str(exc)
+        err = str(exc)
+        lower = err.lower()
+        if "busy" in lower or "resource temporarily unavailable" in lower or "errno 16" in lower:
+            log.warning(
+                "Reader port %s busy — stop hwsniff.service before manual UART tests",
+                device,
+            )
+        return False, err
 
 
 def detect_readers(
@@ -101,11 +170,14 @@ def detect_readers(
     client_factory: Callable[[str, float], Any] | None = None,
     verify: bool = True,
 ) -> list[ReaderCandidate]:
-    raw = enumerate_reader_candidates(list_ports=list_ports)
+    raw = enumerate_reader_candidates(
+        list_ports=list_ports,
+        preferred_serial=preferred_serial,
+    )
     if preferred_serial:
         raw.sort(
             key=lambda c: (
-                0 if (c.serial_number or "") == preferred_serial else 1,
+                0 if matches_preferred(c, preferred_serial) else 1,
                 -c.score,
                 c.device,
             )
@@ -136,7 +208,14 @@ def detect_readers(
                 verify_error=err,
             )
         )
-    verified.sort(key=lambda c: (-int(c.verified), -c.score, c.device))
+    verified.sort(
+        key=lambda c: (
+            0 if matches_preferred(c, preferred_serial) else 1,
+            -int(c.verified),
+            -c.score,
+            c.device,
+        )
+    )
     return verified
 
 
@@ -144,4 +223,37 @@ def pick_single_reader(candidates: list[ReaderCandidate]) -> ReaderCandidate | N
     good = [c for c in candidates if c.verified]
     if len(good) == 1:
         return good[0]
+    return None
+
+
+def pick_reader(
+    candidates: list[ReaderCandidate],
+    *,
+    preferred_serial: str | None = None,
+    auto_detect: bool = True,
+) -> ReaderCandidate | None:
+    """Pick preferred verified device, else fall back when auto_detect is True."""
+    verified = [c for c in candidates if c.verified]
+    if preferred_serial:
+        preferred_hits = [
+            c for c in verified if matches_preferred(c, preferred_serial)
+        ]
+        if preferred_hits:
+            return preferred_hits[0]
+        if not auto_detect:
+            log.warning(
+                "preferred_serial=%s not verified and auto_detect=false",
+                preferred_serial,
+            )
+            return None
+    if len(verified) == 1:
+        return verified[0]
+    if len(verified) > 1 and preferred_serial:
+        # Preferred failed; ambiguous fallback — do not guess.
+        log.warning(
+            "preferred_serial=%s unavailable; %d other readers verified — not auto-picking",
+            preferred_serial,
+            len(verified),
+        )
+        return None
     return None

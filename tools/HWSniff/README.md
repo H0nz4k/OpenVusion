@@ -2,7 +2,7 @@
 
 **Primary target:** Raspberry Pi Zero 2 W **without display**.
 
-- ELATEC TWN4 (USB OTG)
+- ELATEC TWN4 (GPIO UART `/dev/serial0` @ 9600 8N1, or USB ACM)
 - 2 buttons: START / STOP
 - 2 DIP switches: DIP1 / DIP2
 - 4 LEDs: green / yellow / red / blue
@@ -19,21 +19,20 @@ Config **must** include `hardware_profile: "v2"`. Alpha1 pin maps are rejected.
 
 | Function | Physical pin | BCM GPIO | Notes |
 |----------|-------------:|---------:|--------|
-| START    | **29** | 5  | switch → GND, pull-up, active-low |
+| RESERVE  | 29 | 5  | unused |
 | GND      | 30 | — | |
-| STOP     | **31** | 6  | switch → GND, pull-up, active-low |
-| DIP1     | **32** | 12 | switch → GND, pull-up, active-low |
-| DIP2     | **33** | 13 | switch → GND, pull-up, active-low |
+| STOP     | **31** | 6  | switch → GND, pull-up, OFF=1 ON=0 |
+| DIP1     | **32** | 12 | switch → GND, pull-up, OFF=1 ON=0 |
+| DIP2     | **33** | 13 | switch → GND, pull-up, OFF=1 ON=0 |
 | GND      | 34 | — | |
 | GREEN    | **35** | 19 | GPIO → 330 Ω → LED → GND, active-high |
 | YELLOW   | **36** | 16 | same |
 | RED      | **37** | 26 | same |
 | BLUE     | **38** | 20 | WLAN heartbeat |
 | GND      | 39 | — | |
-| RESERVE  | 40 | 21 | unused |
+| START    | **40** | 21 | switch → GND, pull-up, OFF=1 ON=0 |
 
 ```text
-GPIO5  / pin 29 ── START ── GND
 GPIO6  / pin 31 ── STOP  ── GND
 GPIO12 / pin 32 ── DIP1 ── GND
 GPIO13 / pin 33 ── DIP2 ── GND
@@ -41,6 +40,7 @@ GPIO19 / pin 35 ── 330Ω ── GREEN  ── GND
 GPIO16 / pin 36 ── 330Ω ── YELLOW ── GND
 GPIO26 / pin 37 ── 330Ω ── RED    ── GND
 GPIO20 / pin 38 ── 330Ω ── BLUE   ── GND
+GPIO21 / pin 40 ── START ── GND
 ```
 
 ## DIP modes
@@ -108,6 +108,50 @@ HWSniff does **not** reimplement TWN4 protocol. It drives:
 `ElaTool readonly_capture.CaptureProbe` ← same engine as PCSniff
 
 One READ = one port, one tag, one locked UID. Directory stays `*_UID-pending` until serial/raw tracer close, then rename.
+
+## ELATEC TWN4 over GPIO UART
+
+Production reader path: **`/dev/serial0`** (stable alias → `ttyS0` / `ttyAMA*`), not a hard-coded `ttyS0`.
+
+| Setting | Value |
+|---------|--------|
+| Baud | **9600** 8N1, no flow control |
+| Host interface | COM1 (`HOSTSENSE` → **GND**) |
+| Firmware | Simple Protocol (e.g. `TWN4_*_Simple_Protocol.bix`) |
+| Config | `"reader.preferred_serial": "/dev/serial0"`, `"auto_detect": true` |
+
+Pi firmware:
+
+```text
+# /boot/firmware/config.txt
+enable_uart=1
+
+# /boot/firmware/cmdline.txt — remove console=serial0,115200
+```
+
+**Port exclusivity:** `hwsniff.service` and any manual UART tool must not share the port.
+Before manual tests (`tests/twn4_uart_test.py`, screen, minicom):
+
+```bash
+sudo systemctl stop hwsniff
+```
+
+If open fails with busy / exclusive error, the service (or another process) still holds the UART.
+
+## Export bundles
+
+After each successful tag capture, artifacts are packed into an uncompressed **`.tar`**
+(`DDMMYYYY_HH_MM.tar`) under the primary root:
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `collector.export_bundle_root` | `/var/lib/hwsniff/export` | Authoritative primary output |
+| `collector.export_bundle_mirror_root` | `/home/sniffer/exports` (example) | Optional identical copy; `null` = off |
+| `collector.include_logs_in_bundle` | `false` (code default) | When `true`, pack `log_root` files under `logs/` |
+
+Primary archive is written atomically (`.tmp` + rename). Mirror copy runs only after
+primary success; mirror failures are logged and never delete the primary ZIP/tar.
+Installer creates the mirror dir as `hwsniff:sniffer` mode `2775` (writable by service, readable by login user).
 
 ## Install / deploy
 

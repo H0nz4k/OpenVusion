@@ -101,7 +101,7 @@ class GpioDefaultsTests(unittest.TestCase):
     def test_default_gpio_pins_v2(self):
         g = DEFAULT_CONFIG["gpio"]
         self.assertEqual(DEFAULT_CONFIG["hardware_profile"], "v2")
-        self.assertEqual(g["buttons"]["start"], 5)
+        self.assertEqual(g["buttons"]["start"], 21)
         self.assertEqual(g["buttons"]["stop"], 6)
         self.assertEqual(g["dip"]["dip1"], 12)
         self.assertEqual(g["dip"]["dip2"], 13)
@@ -121,6 +121,27 @@ class GpioDefaultsTests(unittest.TestCase):
             )
             with self.assertRaises(ConfigError):
                 load_config(path)
+
+    def test_old_collector_keys_merge_compatibly(self):
+        """Configs without mirror/logs keys keep safe defaults after merge."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "cfg.json"
+            path.write_text(
+                '{"hardware_profile":"v2","collector":{"export_bundle_root":"/tmp/e"}}',
+                encoding="utf-8",
+            )
+            cfg = load_config(path)
+            coll = cfg["collector"]
+            self.assertEqual(coll["export_bundle_root"], "/tmp/e")
+            # Defaults from DEFAULT_CONFIG deep-merge
+            self.assertIn("export_bundle_mirror_root", coll)
+            self.assertFalse(coll["include_logs_in_bundle"])
+
+    def test_preferred_serial0_default(self):
+        self.assertEqual(
+            DEFAULT_CONFIG["reader"]["preferred_serial"], "/dev/serial0"
+        )
+        self.assertTrue(DEFAULT_CONFIG["reader"]["auto_detect"])
 
 
 class DipTests(unittest.TestCase):
@@ -245,7 +266,7 @@ class PatternTests(unittest.TestCase):
 
 
 class AppHelpers:
-    START = 5
+    START = 21
     STOP = 6
     DIP1 = 12
     DIP2 = 13

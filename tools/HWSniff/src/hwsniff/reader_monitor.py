@@ -69,7 +69,7 @@ class ReaderMonitor:
             else:
                 from .reader_detection import select_reader
 
-                chosen = select_reader(candidates)
+                chosen = select_reader(candidates, self.config)
             if chosen is None:
                 return ReaderPresence(present=False, error="no_reader")
             version = None

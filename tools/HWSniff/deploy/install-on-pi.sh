@@ -62,6 +62,8 @@ CONFIG_DIR="${CONFIG_DIR:-/etc/hwsniff}"
 DATA_ROOT="${DATA_ROOT:-/var/lib/hwsniff}"
 LOG_ROOT="${LOG_ROOT:-/var/log/hwsniff}"
 SERVICE_USER="${SERVICE_USER:-hwsniff}"
+LOGIN_USER="${LOGIN_USER:-sniffer}"
+EXPORT_MIRROR_ROOT="${EXPORT_MIRROR_ROOT:-/home/${LOGIN_USER}/exports}"
 
 log() { echo "==> $*"; }
 die() { echo "ERROR: $*" >&2; exit 1; }
@@ -102,12 +104,12 @@ if ! id -u "$SERVICE_USER" >/dev/null 2>&1; then
   useradd --system --create-home --home-dir "/home/$SERVICE_USER" \
     --shell /usr/sbin/nologin "$SERVICE_USER"
 fi
-# gpio: LED/button chips; dialout: future TWN4 USB serial
+# gpio: LED/button chips; dialout: TWN4 USB ACM + GPIO UART (/dev/serial0)
 usermod -aG gpio,dialout "$SERVICE_USER" || true
 
 # --- 3) directories ---------------------------------------------------------
 log "Creating directories"
-mkdir -p "$INSTALL_ROOT" "$CONFIG_DIR" "$DATA_ROOT/captures" "$LOG_ROOT"
+mkdir -p "$INSTALL_ROOT" "$CONFIG_DIR" "$DATA_ROOT/captures" "$DATA_ROOT/export" "$LOG_ROOT"
 
 # --- 4) sync application code ---------------------------------------------
 log "Syncing application → $INSTALL_ROOT"
@@ -176,9 +178,19 @@ else:
 PY
 fi
 
-# Runtime dirs for lgpio notify pipes + captures
+# Runtime dirs for lgpio notify pipes + captures + export mirror
 mkdir -p "$DATA_ROOT/captures" "$DATA_ROOT/export" "$LOG_ROOT"
 chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_ROOT" "$LOG_ROOT"
+
+# Mirror export dir: hwsniff writes, login user (sniffer) reads — no 0777
+if id "$LOGIN_USER" >/dev/null 2>&1; then
+  log "Preparing export mirror → $EXPORT_MIRROR_ROOT (owner $SERVICE_USER:$LOGIN_USER)"
+  mkdir -p "$EXPORT_MIRROR_ROOT"
+  chown "$SERVICE_USER:$LOGIN_USER" "$EXPORT_MIRROR_ROOT"
+  chmod 2775 "$EXPORT_MIRROR_ROOT"
+else
+  log "Login user $LOGIN_USER missing — skipping mirror dir $EXPORT_MIRROR_ROOT"
+fi
 
 # --- 7) config hardening (GPIO long-STOP must never poweroff) --------------
 # Remove legacy sudoers from older installs — power is a hardware switch.
@@ -196,8 +208,29 @@ shutdown = cfg.setdefault("shutdown", {})
 shutdown["enabled"] = False
 boot = cfg.setdefault("boot", {})
 boot.setdefault("shutdown_arm_seconds", 30)
+# START moved pin 29/BCM5 → pin 40/BCM21 (pull-up, OFF=1 ON=0)
+buttons = (cfg.setdefault("gpio", {})).setdefault("buttons", {})
+old_start = buttons.get("start")
+if old_start in (None, 5):
+    buttons["start"] = 21
+buttons.setdefault("stop", 6)
+buttons.setdefault("active_low", True)
+buttons.setdefault("pull_up", True)
+reader = cfg.setdefault("reader", {})
+reader.setdefault("auto_detect", True)
+if not reader.get("preferred_serial"):
+    reader["preferred_serial"] = "/dev/serial0"
+collector = cfg.setdefault("collector", {})
+collector.setdefault("export_bundle_root", "/var/lib/hwsniff/export")
+collector.setdefault("export_bundle_mirror_root", "$EXPORT_MIRROR_ROOT")
+collector.setdefault("include_logs_in_bundle", True)
 p.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-print("hardware_profile=v2; shutdown.enabled=false")
+print(
+    f"hardware_profile=v2; shutdown.enabled=false; "
+    f"buttons.start={buttons.get('start')} (was {old_start}); "
+    f"preferred_serial={reader.get('preferred_serial')}; "
+    f"mirror={collector.get('export_bundle_mirror_root')}"
+)
 PY
 
 # --- 8) systemd unit -------------------------------------------------------
@@ -258,11 +291,17 @@ cat <<EOF
   App:     $INSTALL_ROOT
   Config:  $CONFIG_DIR/config.json
   Data:    $DATA_ROOT
+  Export:  $DATA_ROOT/export  (+ mirror $EXPORT_MIRROR_ROOT)
   Logs:    journalctl -u hwsniff -f
 
   Status:  systemctl status hwsniff
   Stop:    sudo systemctl stop hwsniff
   Test:    sudo -u $SERVICE_USER $INSTALL_ROOT/.venv/bin/python -m hwsniff --gpio-test
+
+  UART (ELATEC TWN4 COM1 @ 9600 8N1 on /dev/serial0):
+    - /boot/firmware/config.txt: enable_uart=1
+    - remove console=serial0,115200 from cmdline.txt
+    - HOSTSENSE → GND (COM1); stop hwsniff before manual UART tests
 
   Safe bring-up (recommended):
     1) sudo reboot                          # groups / gpio / dialout
@@ -277,7 +316,7 @@ cat <<EOF
         Never run GPIO CLI from /opt/Sniff as cwd (not writable).
         App also chdirs to data_root automatically.
         STOP = cooperative cancel. Power is a hardware switch.
-        GPIO v2: 29 START, 31 STOP, 32 DIP1, 33 DIP2,
+        GPIO v2: 40 START, 31 STOP, 32 DIP1, 33 DIP2,
                  35 GREEN, 36 YELLOW, 37 RED, 38 BLUE.
 ========================================================================
 EOF

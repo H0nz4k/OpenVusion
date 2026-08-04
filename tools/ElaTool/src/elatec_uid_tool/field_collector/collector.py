@@ -221,7 +221,11 @@ class FieldCollector:
                 try:
                     planned = resolve_export_tar_path(Path(export_root))
                     tar_path = pack_capture_export(
-                        result.output_dir, tar_path=planned
+                        result.output_dir,
+                        tar_path=planned,
+                        log_root=self.config.log_root,
+                        include_logs=bool(self.config.include_logs_in_bundle),
+                        mirror_root=self.config.export_bundle_mirror_root,
                     )
                     export_tar = str(tar_path)
                     emit("export_bundled", path=export_tar, uid=result.uid)

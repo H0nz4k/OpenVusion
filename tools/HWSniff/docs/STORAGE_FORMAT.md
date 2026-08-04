@@ -7,48 +7,68 @@
   captures/
     YYYY-MM-DD/
       YYYY-MM-DD_HH-MM-SS_<UID>/
-        metadata.json
-        application_block.bin / .json   # pages 0x30–0x37
-        session.bin / session.json      # session registers 0xEC–0xED
-        dump.bin / dump.json            # full EEPROM 0x00–0xE1
-        hashes.json                     # SHA-256 of artifacts
-        report.txt
+        summary.json
+        application.json / eeprom.json / …
+        events.jsonl
+        …
+  export/
+    DDMMYYYY_HH_MM.tar          # primary export bundle (authoritative)
   index.csv
   index.jsonl
+
+/var/log/hwsniff/
+  hwsniff.log
+  collector.jsonl
+  …
+
+/home/sniffer/exports/          # optional mirror of finished .tar (same filename)
+  DDMMYYYY_HH_MM.tar
 ```
 
-One START session = one long-lived reader process: detect (incl. already-present
-tag via RF wake) → full export → wait for removal → next tag.
+One START → one tag → one capture directory → one export archive.
 
 ## Export TAR (one tag → one archive)
 
 After each successful sniff of **one tag**, every artifact from that capture is
-packed into a single uncompressed tar:
+packed into a single uncompressed tar (atomic write via `.tmp` + rename):
 
 ```text
-/home/sniffer/capture/DDMMYYYY_HH_MM.tar
+/var/lib/hwsniff/export/DDMMYYYY_HH_MM.tar
 ```
 
-Example: `/home/sniffer/capture/31072026_05_15.tar`
+Example: `/var/lib/hwsniff/export/04082026_22_15.tar`
 
 If two tags finish in the same minute: `…_1.tar`, `…_2.tar`, …
 
-Configurable via `collector.export_bundle_root` (set `null` to disable).
+### Config (`collector`)
+
+| Key | Default | Notes |
+|-----|---------|-------|
+| `export_bundle_root` | `/var/lib/hwsniff/export` | Primary; set `null` to disable packing |
+| `export_bundle_mirror_root` | `null` (code) / `/home/sniffer/exports` (Pi example) | Identical copy after primary success |
+| `include_logs_in_bundle` | `false` | When `true`, include regular files from `log_root` under `logs/` |
+
+Capture files are stored as **flattened basenames** in the archive (legacy layout).
+Log files keep their relative path under `logs/` (symlinks / sockets / devices skipped).
+Missing `log_root` only logs a warning — export still succeeds.
+
+Mirror failures are logged; the primary archive is never deleted.
+
 Original files under `/var/lib/hwsniff/captures/` are kept.
 
 ## Integrity
 
-Before UI shows CAPTURE OK / SAFE:
+Before UI / LEDs show CAPTURE OK:
 
 1. required files written
 2. files re-opened
-3. SHA-256 recorded in `hashes.json`
+3. SHA-256 recorded where applicable
 4. index append
-5. flush
+5. export pack (+ optional mirror)
 
 Partial failures are marked in metadata (`finish_status`) and never claimed OK.
 
-## Export
+## USB bulk export
 
 ```bash
 /opt/Sniff/scripts/export-data.sh /media/usb

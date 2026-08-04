@@ -5,6 +5,7 @@ from typing import Any, Callable
 from elatec_uid_tool.field_collector import (
     ReaderCandidate,
     detect_readers,
+    pick_reader,
     pick_single_reader,
 )
 
@@ -25,5 +26,16 @@ def scan_readers(
     )
 
 
-def select_reader(candidates: list[ReaderCandidate]) -> ReaderCandidate | None:
-    return pick_single_reader(candidates)
+def select_reader(
+    candidates: list[ReaderCandidate],
+    config: dict[str, Any] | None = None,
+) -> ReaderCandidate | None:
+    """Prefer configured device path/serial; auto_detect falls back to single match."""
+    if config is None:
+        return pick_single_reader(candidates)
+    reader = config.get("reader") or {}
+    return pick_reader(
+        candidates,
+        preferred_serial=reader.get("preferred_serial"),
+        auto_detect=bool(reader.get("auto_detect", True)),
+    )

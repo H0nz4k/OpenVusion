@@ -9,7 +9,7 @@ from .models import (
     FinishStatus,
     ReaderCandidate,
 )
-from .reader import detect_readers, handshake_reader, pick_single_reader
+from .reader import detect_readers, handshake_reader, pick_reader, pick_single_reader
 from .storage import free_space_bytes, ensure_writable_dir
 
 __all__ = [
@@ -24,5 +24,6 @@ __all__ = [
     "ensure_writable_dir",
     "free_space_bytes",
     "handshake_reader",
+    "pick_reader",
     "pick_single_reader",
 ]

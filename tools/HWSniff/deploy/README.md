@@ -11,7 +11,7 @@ Jednou nastav cíl:
 ```powershell
 cd tools\HWSniff\deploy
 copy deploy.env.example deploy.env
-# uprav HWSNIFF_PI=uzivatel@IP
+# uprav HWSNIFF_PI=sniffer@192.168.1.4
 ```
 
 **Denní update kódu** (sync do `/opt/Sniff` + restart služby):
@@ -20,13 +20,13 @@ copy deploy.env.example deploy.env
 cd tools\HWSniff\deploy
 .\deploy-to-pi.ps1
 # nebo bez deploy.env:
-.\deploy-to-pi.ps1 -Target pi@192.168.1.50
+.\deploy-to-pi.ps1 -Target sniffer@192.168.1.4
 ```
 
 **První / čistá instalace** na Pi:
 
 ```powershell
-.\deploy-to-pi.ps1 -Target pi@192.168.1.50 -Mode Full
+.\deploy-to-pi.ps1 -Target sniffer@192.168.1.4 -Mode Full
 ```
 
 Pak na Pi (nebo přes ssh):
@@ -37,9 +37,13 @@ cd /var/lib/hwsniff
 sudo -u hwsniff /opt/Sniff/.venv/bin/python -m hwsniff --diagnostics
 cd /var/lib/hwsniff
 sudo -u hwsniff /opt/Sniff/.venv/bin/python -m hwsniff --gpio-test
-# DIP1+DIP2 OFF; GPIO v2: 29 START, 31 STOP, 32/33 DIP, 35–38 LEDs
+# DIP1+DIP2 OFF; GPIO v2: 40 START, 31 STOP, 32/33 DIP, 35–38 LEDs
+# Reader: preferred_serial=/dev/serial0 (9600 8N1); stop service before manual UART tests
 sudo systemctl enable --now hwsniff
 ```
+
+Export bundles land in `/var/lib/hwsniff/export` and (when configured) mirror to
+`/home/sniffer/exports`. Installer creates the mirror dir as `hwsniff:sniffer` `2775`.
 
 | Parametr | Význam |
 |----------|--------|

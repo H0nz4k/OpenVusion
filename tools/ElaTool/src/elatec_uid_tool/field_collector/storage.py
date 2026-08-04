@@ -3,11 +3,15 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import logging
 import os
+import shutil
 import tarfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 
 def sha256_file(path: Path) -> str:
@@ -35,8 +39,6 @@ def free_space_bytes(path: Path) -> int:
     if usage is not None:
         return int(usage.f_bavail * usage.f_frsize)
     # Windows fallback for unit tests
-    import shutil
-
     return int(shutil.disk_usage(path).free)
 
 
@@ -130,7 +132,7 @@ def resolve_export_tar_path(
     *,
     when: datetime | None = None,
 ) -> Path:
-    """Return /home/sniffer/capture/DDMMYYYY_HH_MM.tar (unique within the minute)."""
+    """Return export_root/DDMMYYYY_HH_MM.tar (unique within the minute)."""
     root = Path(export_root)
     root.mkdir(parents=True, exist_ok=True)
     stamp = export_bundle_stamp(when)
@@ -142,14 +144,79 @@ def resolve_export_tar_path(
     return tar_path
 
 
+def _is_packable_regular_file(path: Path) -> bool:
+    """True for ordinary files only — skip symlinks, sockets, devices, dirs."""
+    try:
+        if path.is_symlink():
+            return False
+        return path.is_file()
+    except OSError:
+        return False
+
+
+def _iter_capture_files(capture_directory: Path) -> list[Path]:
+    return sorted(
+        path
+        for path in capture_directory.rglob("*")
+        if _is_packable_regular_file(path)
+    )
+
+
+def _iter_log_files(log_root: Path) -> list[Path]:
+    if not log_root.exists():
+        return []
+    if not log_root.is_dir():
+        return []
+    return sorted(
+        path for path in log_root.rglob("*") if _is_packable_regular_file(path)
+    )
+
+
+def _atomic_replace(tmp_path: Path, final_path: Path) -> None:
+    """Replace final_path with tmp_path; fall back to copy+unlink if needed."""
+    try:
+        os.replace(tmp_path, final_path)
+    except OSError:
+        # Cross-device rename (e.g. different mounts) — copy then remove tmp.
+        shutil.copy2(tmp_path, final_path)
+        tmp_path.unlink(missing_ok=True)
+
+
+def mirror_export_bundle(primary: Path, mirror_root: Path | str) -> Path:
+    """Copy primary bundle into mirror_root with the same filename (atomic)."""
+    primary = Path(primary)
+    dest_dir = Path(mirror_root)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / primary.name
+    tmp = dest.with_name(dest.name + ".tmp")
+    try:
+        if tmp.exists():
+            tmp.unlink()
+        shutil.copy2(primary, tmp)
+        _atomic_replace(tmp, dest)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+    return dest
+
+
 def pack_capture_export(
     capture_directory: Path,
     *,
     export_root: Path | None = None,
     when: datetime | None = None,
     tar_path: Path | None = None,
+    log_root: Path | str | None = None,
+    include_logs: bool = False,
+    mirror_root: Path | str | None = None,
 ) -> Path:
-    """Pack every capture file into export_root/DDMMYYYY_HH_MM.tar."""
+    """Pack capture files into export_root/DDMMYYYY_HH_MM.tar (atomic write).
+
+    Optional ``include_logs`` adds regular files from ``log_root`` under ``logs/``
+    preserving relative structure. Optional ``mirror_root`` receives an identical
+    copy after the primary archive is fully written; mirror failures are logged
+    and never delete the primary.
+    """
     capture_directory = Path(capture_directory)
     if not capture_directory.is_dir():
         raise FileNotFoundError(f"Capture directory missing: {capture_directory}")
@@ -162,17 +229,58 @@ def pack_capture_export(
         tar_path = Path(tar_path)
         tar_path.parent.mkdir(parents=True, exist_ok=True)
 
-    files = sorted(
-        path for path in capture_directory.rglob("*") if path.is_file()
-    )
+    files = _iter_capture_files(capture_directory)
     if not files:
         raise FileNotFoundError(f"No files to pack in {capture_directory}")
 
-    # Uncompressed .tar as requested (portable, easy to inspect on the Pi).
-    with tarfile.open(tar_path, mode="w") as archive:
-        for path in files:
-            archive.add(path, arcname=path.name)
+    log_entries: list[tuple[Path, str]] = []
+    if include_logs:
+        if not log_root:
+            log.warning(
+                "include_logs_in_bundle enabled but log_root missing/empty — skipping logs"
+            )
+        else:
+            root = Path(log_root)
+            if not root.exists() or not root.is_dir():
+                log.warning(
+                    "log_root %s missing or not a directory — skipping logs in bundle",
+                    root,
+                )
+            else:
+                for path in _iter_log_files(root):
+                    try:
+                        rel = path.relative_to(root).as_posix()
+                    except ValueError:
+                        rel = path.name
+                    log_entries.append((path, f"logs/{rel}"))
 
-    with tar_path.open("rb") as handle:
-        handle.read(1)
+    tmp_path = tar_path.with_name(tar_path.name + ".tmp")
+    if tmp_path.exists():
+        tmp_path.unlink()
+
+    try:
+        # Uncompressed .tar (portable, easy to inspect on the Pi).
+        with tarfile.open(tmp_path, mode="w") as archive:
+            for path in files:
+                archive.add(path, arcname=path.name)
+            for path, arcname in log_entries:
+                archive.add(path, arcname=arcname)
+        with tmp_path.open("rb") as handle:
+            handle.read(1)
+        _atomic_replace(tmp_path, tar_path)
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+    if mirror_root:
+        try:
+            mirrored = mirror_export_bundle(tar_path, mirror_root)
+            log.info("Export bundle mirrored to %s", mirrored)
+        except OSError as exc:
+            log.error(
+                "Export mirror failed (primary kept at %s): %s",
+                tar_path,
+                exc,
+            )
+
     return tar_path

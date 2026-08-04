@@ -1,0 +1,34 @@
+Chtěl bych upravit hw rozložení pinů a celkově to zjednoduššit. 
+z gpia bych chtěl piny 1 - 6 napájecí část.
+pak 13-16 - to bude rezerva
+29 - 40 pro tlačíta a led.
+
+1. tlačítko start - pin 40 (GP21)
+2. tlačitko stop  - pin 31 (GP6)
+3. DIP mode 1 - přepnutí z normal do sweetp mode - pin 32
+4. DIP mode 2 - přeputí z normal do wifis mode - pin 33
+   (tlačítka/DIP: interní pull-up, OFF=1 / ON=0)
+
+Led 1 zelena - pin 35
+Led 2 žlutá  - pin 36
+Led 3 červená- 37
+Led 4 modrá  - 38
+
+Celá logika kodu, musí být jasná, jednoduchá a blbuvzdorná!
+1. zapnu zařízení (oba DIP off jinak ERROR3) - zařízení nastartuje - proběhne led 2x zasebou sekvence, krok po 0,5sekunde - zapnu led 1, vypunu led1 zapnu led2 vypnu led2, zapnu led3 vypnu led3 zapnu led4 vypnu led4 - tím poznám, že SW naběhl
+2. - pokud je vše ok (stav READY), svítí led1, pokud je i přihlášen k wifi, 1x za 3sec blikne led4
+   - pokud chyba (ERROR1)- nenaběhl script - led1 vypnutá a svítí led 3.
+   - pokud neni připojená čtečka (ERROR2)- led1 bliká a led 3 také bliká - 1x za sekundu čeká na připojení čtečky - pravidelně kontroluje, jestli nedošlo k připojení čtečky,  pokud ano, tak je vše ok a tudíž naskočí stav READY.
+   
+3.  DIP mode 1 - sweetp - při přepnutí z READY čeká na přiložení čtečky k tagu a pomocí led1,led2,led3 zobrazuje idealní sílu signál - idealní pozici čtečky vs. tag.
+	po vypnutí se vrátí do stavu READY.
+	DIP mode 2 musí být off, jinak ERROR3 - led3 bliká v intervalu 3x po 0,5sec pak 1,5sec vypnutá, stále dokola, dokud nevypnu DIP2
+4.  DIP mode 2 - funkci doplním později
+	DIP mode 1 musí být off, jinak ERROR3 - led3 bliká v intervalu 3x po 0,5sec pak 1,5sec vypnutá, stále dokola, dokud nevypnu DIP2
+
+3. stav READY - čeká na stlačení tlačítka start - pokud stisknu tak nejdříve čeká na sílu signálu minimálně led2, pokud je signal pouze led3, tak čeká.
+	pokud je sila na led1 nebo led2 a zmačknu znovu tlačítko start - začne stav READ a začne načítat všechny data z tagu.
+	pokud zmačknu kdykoliv tlačítko stop, tak vše zruší a vrací se do stavu READY.
+	Pokud vše proběhne tak jak má - READ doběhne, 5x po 0,5sec zabliká led1 led2 a led3, já vím, že mužu čtečku oddálit od tagu, na pozadí probíha stav SAVE.
+4. stav SAVE - vše se zabaluje a ukládá - pokud vše ok - stav READY, pokud nějaká chyba ERROR1 a zápis do log filu s popisem, co je špatně.
+

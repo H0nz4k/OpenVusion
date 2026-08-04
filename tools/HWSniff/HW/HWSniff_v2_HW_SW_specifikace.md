@@ -20,7 +20,7 @@ Základní principy:
 
 | Funkce | Fyzický pin | BCM GPIO |
 |---|---:|---:|
-| START tlačítko | 29 | GPIO5 |
+| Rezerva | 29 | GPIO5 |
 | GND | 30 | GND |
 | STOP tlačítko | 31 | GPIO6 |
 | DIP MODE 1 | 32 | GPIO12 |
@@ -31,14 +31,14 @@ Základní principy:
 | LED3 červená | 37 | GPIO26 |
 | LED4 modrá | 38 | GPIO20 |
 | GND | 39 | GND |
-| Rezerva | 40 | GPIO21 |
+| START tlačítko | 40 | GPIO21 |
 
 ### Tlačítka
 
-Použít interní pull-up:
+Interní pull-up: OFF = HIGH (1), ON/stisk = LOW (0).
 
 ```text
-GPIO5  / pin 29 ── START ── GND
+GPIO21 / pin 40 ── START ── GND
 GPIO6  / pin 31 ── STOP  ── GND
 ```
 

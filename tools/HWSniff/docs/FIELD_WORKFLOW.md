@@ -12,9 +12,16 @@
 10. Optionally tap **DETAIL** for per-phase status and paths.
 11. Tap **SHUTDOWN** only from READY.
 
-Each successful/partial capture also packs artifacts to:
+Each successful/partial capture also packs artifacts to the primary export root:
 
-`/home/sniffer/capture/DDMMYYYY_HH_MM.tar`
+`/var/lib/hwsniff/export/DDMMYYYY_HH_MM.tar`
+
+Optional identical mirror (Pi default): `/home/sniffer/exports/` (same filename).
+With `include_logs_in_bundle: true`, application logs from `log_root` are stored
+inside the archive under `logs/`.
 
 Read-only only — never write to tags. SweetP is a positioning aid only;
 see [SWEETP.md](SWEETP.md).
+
+GPIO UART: prefer `/dev/serial0` @ 9600 8N1. Stop `hwsniff.service` before any
+manual serial test so the port is free.

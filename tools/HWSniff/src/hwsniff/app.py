@@ -136,7 +136,7 @@ class HeadlessApp:
         self.buttons = ButtonWatcher(
             self.gpio,
             ButtonConfig(
-                start_pin=int(btn_cfg.get("start", 5)),
+                start_pin=int(btn_cfg.get("start", 21)),
                 stop_pin=int(btn_cfg.get("stop", 6)),
                 active_low=bool(btn_cfg.get("active_low", True)),
                 pull_up=bool(btn_cfg.get("pull_up", True)),

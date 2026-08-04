@@ -18,8 +18,8 @@ class ButtonEvent(str, Enum):
 
 @dataclass
 class ButtonConfig:
-    start_pin: int = 17
-    stop_pin: int = 27
+    start_pin: int = 21
+    stop_pin: int = 6
     active_low: bool = True
     pull_up: bool = True
     debounce_ms: int = 50

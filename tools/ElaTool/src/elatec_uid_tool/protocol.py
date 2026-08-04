@@ -98,7 +98,7 @@ class SerialAsciiTransport:
         if self._serial is not None:
             return
         try:
-            self._serial = serial.Serial(
+            kwargs = dict(
                 port=self.port,
                 baudrate=self.baudrate,
                 bytesize=serial.EIGHTBITS,
@@ -107,13 +107,19 @@ class SerialAsciiTransport:
                 timeout=self.timeout,
                 write_timeout=self.timeout,
             )
+            # POSIX exclusive open — clearer "port busy" when hwsniff holds UART.
+            try:
+                self._serial = serial.Serial(**kwargs, exclusive=True)
+            except (TypeError, ValueError):
+                self._serial = serial.Serial(**kwargs)
             time.sleep(0.20)
             self._serial.reset_input_buffer()
             self._serial.reset_output_buffer()
         except Exception as exc:
             raise SerialCommunicationError(
                 f"Nelze otevřít {self.port}: {exc}. "
-                "Zkontroluj, zda port nepoužívá AppBlaster nebo terminál."
+                "Port už může držet hwsniff.service, AppBlaster nebo terminál — "
+                "před ručním testem: sudo systemctl stop hwsniff."
             ) from exc
 
     def close(self) -> None:

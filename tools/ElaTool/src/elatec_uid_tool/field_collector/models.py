@@ -93,6 +93,12 @@ class CollectorConfig:
     include_full_dump: bool = False
     # After each one-tag sniff, pack all artifacts as DDMMYYYY_HH_MM.tar here.
     export_bundle_root: str | None = "/home/sniffer/capture"
+    # Optional identical copy of the finished primary bundle (null = no mirror).
+    export_bundle_mirror_root: str | None = None
+    # When True, pack regular files from log_root under logs/ inside the tar.
+    include_logs_in_bundle: bool = False
+    # Application log directory (HWSniff log_root); used only if include_logs_in_bundle.
+    log_root: str | None = None
     # One-shot retry / timeout controls (used by capture_one / run_once).
     phase_retry_count: int = 3
     phase_retry_delay_ms: float = 150.0

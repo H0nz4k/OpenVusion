@@ -17,26 +17,35 @@ SERVICE_USER="${SERVICE_USER:-hwsniff}"
 }
 
 echo "==> Quick update → $INSTALL_ROOT"
+# Never delete _vendor (ElaTool from Full install) or .venv
 rsync -a --delete \
   --exclude '.venv' \
+  --exclude '_vendor' \
   --exclude '__pycache__' \
   --exclude '*.pyc' \
   --exclude 'captures' \
   --exclude 'deploy/dist' \
   "$SRC/" "$INSTALL_ROOT/"
 
-# Ensure package is importable (editable install already present on full install)
+# Ensure packages are importable (editable installs from Full install)
 if [[ -x "$INSTALL_ROOT/.venv/bin/pip" ]]; then
+  if [[ -d "$INSTALL_ROOT/_vendor/ElaTool" ]]; then
+    "$INSTALL_ROOT/.venv/bin/pip" install -e "$INSTALL_ROOT/_vendor/ElaTool" -q
+  else
+    echo "WARNING: $INSTALL_ROOT/_vendor/ElaTool missing — run Full install"
+  fi
   "$INSTALL_ROOT/.venv/bin/pip" install -e "$INSTALL_ROOT" -q
 fi
 
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_ROOT"
 
-# Smoke import
+# Smoke import (must include ElaTool — service crashes without it)
 sudo -u "$SERVICE_USER" "$INSTALL_ROOT/.venv/bin/python" - <<'PY'
 import hwsniff
+import elatec_uid_tool.ntag
 from hwsniff.gpio_backend import GpioZeroBackend
 print("hwsniff ok:", hwsniff.__file__)
+print("elatec_uid_tool ok:", elatec_uid_tool.ntag.__file__)
 PY
 
 if [[ "$RESTART" == "1" ]]; then

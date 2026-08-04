@@ -7,7 +7,7 @@ from typing import Any
 
 # BCM GPIO ↔ physical pin (40-pin header, lower block)
 GPIO_PHYSICAL: dict[str, int] = {
-    "start": 29,
+    "reserve": 29,
     "stop": 31,
     "dip1": 32,
     "dip2": 33,
@@ -15,7 +15,7 @@ GPIO_PHYSICAL: dict[str, int] = {
     "yellow": 36,
     "red": 37,
     "blue": 38,
-    "reserve": 40,
+    "start": 40,
 }
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -28,7 +28,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "gpio_prefer_mock": False,
     "gpio": {
         "buttons": {
-            "start": 5,
+            "start": 21,
             "stop": 6,
             "active_low": True,
             "pull_up": True,
@@ -103,7 +103,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "reader": {
         "auto_detect": True,
-        "preferred_serial": None,
+        # Prefer Pi GPIO UART alias (symlink → ttyS0/ttyAMA*). USB S/N still works.
+        "preferred_serial": "/dev/serial0",
         "scan_interval_seconds": 1.0,
         "handshake_timeout_seconds": 2,
         "reconnect_delay_seconds": 2,
@@ -125,6 +126,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "include_full_dump": True,
         "full_dump_samples": 1,
         "export_bundle_root": "/var/lib/hwsniff/export",
+        "export_bundle_mirror_root": "/home/sniffer/exports",
+        "include_logs_in_bundle": False,
         "phase_retry_count": 3,
         "phase_retry_delay_ms": 150,
         "tag_acquire_timeout_seconds": 30,

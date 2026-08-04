@@ -46,7 +46,7 @@ def run_gpio_test(
     print(f"Backend: {type(backend).__name__}")
     print("Pin map (BCM -> physical):")
     mapping = [
-        ("START", int(btn_cfg.get("start", 5)), GPIO_PHYSICAL["start"]),
+        ("START", int(btn_cfg.get("start", 21)), GPIO_PHYSICAL["start"]),
         ("STOP", int(btn_cfg.get("stop", 6)), GPIO_PHYSICAL["stop"]),
         ("DIP1", int(dip_cfg.get("dip1", 12)), GPIO_PHYSICAL["dip1"]),
         ("DIP2", int(dip_cfg.get("dip2", 13)), GPIO_PHYSICAL["dip2"]),
@@ -118,7 +118,7 @@ def run_gpio_test(
         buttons = ButtonWatcher(
             backend,
             ButtonConfig(
-                start_pin=int(btn_cfg.get("start", 5)),
+                start_pin=int(btn_cfg.get("start", 21)),
                 stop_pin=int(btn_cfg.get("stop", 6)),
                 active_low=bool(btn_cfg.get("active_low", True)),
                 pull_up=bool(btn_cfg.get("pull_up", True)),
