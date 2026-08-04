@@ -609,7 +609,8 @@ class ReaderHotplugTests(unittest.TestCase, AppHelpers):
         gpio.set_input(self.DIP1, False)
         app.tick()
         self.assertEqual(app.runtime.device_state, DeviceState.SWEETP)
-        reader.present = False
+        # Hotplug is disabled while SweetP owns UART — serial loss via worker flag
+        app.sweet_point.reader_error = "serial gone"
         app.tick()
         self.assertEqual(app.runtime.device_state, DeviceState.ERROR2)
         self.assertFalse(app.sweet_point.is_running())
@@ -619,7 +620,7 @@ class ReaderHotplugTests(unittest.TestCase, AppHelpers):
         app, gpio, clock = self._app(reader=reader)
         self._pulse(gpio, app, clock, self.START)
         self.assertEqual(app.runtime.device_state, DeviceState.POSITIONING)
-        reader.present = False
+        app.sweet_point.reader_error = "serial gone"
         app.tick()
         self.assertEqual(app.runtime.device_state, DeviceState.ERROR2)
         self.assertFalse(app.sweet_point.is_running())
@@ -634,9 +635,8 @@ class ReaderHotplugTests(unittest.TestCase, AppHelpers):
         self._pulse(gpio, app, clock, self.START)
         self.assertEqual(app.runtime.device_state, DeviceState.READ)
         self.assertTrue(app.collector.is_running())
-        reader.present = False
-        app.tick()
-        # Cooperative stop in progress; drain to ERROR2
+        # Hotplug skipped during READ (UART owned by collector)
+        app._on_reader_lost(DeviceState.READ)
         for _ in range(40):
             clock.advance(0.05)
             app.tick()
@@ -660,13 +660,28 @@ class ReaderHotplugTests(unittest.TestCase, AppHelpers):
         gpio.set_input(self.DIP1, False)
         app.tick()
         self.assertEqual(app.runtime.device_state, DeviceState.SWEETP)
-        reader.present = False
+        app.sweet_point.reader_error = "serial gone"
         app.tick()
         self.assertEqual(app.runtime.device_state, DeviceState.ERROR2)
         reader.present = True
         clock.advance(1.1)
         app.tick()
         self.assertEqual(app.runtime.device_state, DeviceState.SWEETP)
+
+    def test_hotplug_does_not_kill_sweetp_when_port_held(self):
+        """Regression: exclusive UART + hotplug must not flap ERROR2."""
+        reader = ToggleableReader()
+        app, gpio, clock = self._app(reader=reader)
+        gpio.set_input(self.DIP1, False)
+        app.tick()
+        self.assertEqual(app.runtime.device_state, DeviceState.SWEETP)
+        # Even if monitor would report missing, hotplug is skipped in SWEETP
+        reader.present = False
+        for _ in range(5):
+            clock.advance(0.05)
+            app.tick()
+        self.assertEqual(app.runtime.device_state, DeviceState.SWEETP)
+        self.assertTrue(app.sweet_point.is_running())
 
 
 class RuntimeCwdTests(unittest.TestCase):

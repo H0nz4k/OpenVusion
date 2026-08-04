@@ -552,31 +552,14 @@ class HeadlessApp:
         return bool(err)
 
     def _poll_reader_hotplug(self, now: float) -> bool:
-        """Monitor TWN4 presence. Return True if transitioned to ERROR2."""
+        """Monitor TWN4 presence. Return True if transitioned to ERROR2.
+
+        Only while READY. During SWEETP / POSITIONING / READ the appliance owns
+        the UART exclusively; a second open looks like "busy"/missing and must
+        not flap ERROR2. Serial loss there is reported via SweetP/collector.
+        """
         st = self.runtime.device_state
-        # SAVE / READ_COMPLETE: reader already closed — disconnect must not abort SAVE.
-        # UPLOAD: UART not required.
-        if st in (
-            DeviceState.ERROR1,
-            DeviceState.ERROR2,
-            DeviceState.ERROR3,
-            DeviceState.BOOT,
-            DeviceState.SHUTDOWN,
-            DeviceState.SAVE,
-            DeviceState.READ_COMPLETE,
-            DeviceState.CANCELLED,
-            DeviceState.UPLOAD,
-        ):
-            return False
-        if st not in (
-            DeviceState.READY,
-            DeviceState.SWEETP,
-            DeviceState.POSITIONING,
-            DeviceState.READ,
-        ):
-            return False
-        # Already stopping capture after disconnect — do not re-enter handler.
-        if st == DeviceState.READ and self._reader_lost_during_capture:
+        if st != DeviceState.READY:
             return False
         presence = self.reader_monitor.tick(now)
         if presence.present:

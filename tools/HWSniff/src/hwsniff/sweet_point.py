@@ -58,16 +58,19 @@ class MockSweetPoint:
         self._t0 = 0.0
         self._sample = SweetSample(None, SweetBand.NONE, False)
         self._forced: SweetSample | None = None
+        self.reader_error: str | None = None
 
     def start(self, port: str | None = None) -> None:
         del port
         self._running = True
+        self.reader_error = None
         self._t0 = self._clock()
         self.tick()
 
     def stop(self) -> None:
         self._running = False
         self._forced = None
+        self.reader_error = None
         self._sample = SweetSample(None, SweetBand.NONE, False)
 
     def is_running(self) -> bool:
