@@ -19,4 +19,9 @@ __pycache__/
 # HWSniff local deploy secrets + packed archives
 tools/HWSniff/deploy/deploy.env
 tools/HWSniff/deploy/dist/
+# Never commit live appliance configs / FTP secrets
+**/config.local.json
+**/secrets.json
+**/ftp.password
+/etc/hwsniff/
 

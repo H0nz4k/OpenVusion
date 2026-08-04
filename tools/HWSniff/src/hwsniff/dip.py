@@ -1,4 +1,4 @@
-"""DIP switch reader → MAIN / SWEETP / ERROR3."""
+"""DIP switch reader → MAIN / SWEETP / UPLOAD / ERROR3."""
 
 from __future__ import annotations
 
@@ -7,9 +7,17 @@ from .state import DipMode
 
 
 def dip_mode_from_levels(*, dip1_on: bool, dip2_on: bool = False) -> DipMode:
-    """DIP2 ON is always ERROR3. DIP1 selects MAIN vs SWEETP when DIP2 is OFF."""
-    if dip2_on:
+    """Map DIP levels to appliance mode.
+
+    DIP1 OFF + DIP2 OFF → MAIN
+    DIP1 ON  + DIP2 OFF → SWEETP
+    DIP1 OFF + DIP2 ON  → UPLOAD (WiFi FTP)
+    DIP1 ON  + DIP2 ON  → ERROR3
+    """
+    if dip1_on and dip2_on:
         return DipMode.ERROR3
+    if dip2_on:
+        return DipMode.UPLOAD
     return DipMode.SWEETP if dip1_on else DipMode.MAIN
 
 
@@ -45,9 +53,15 @@ class DipReader:
     def describe(self) -> dict[str, str]:
         d1, d2 = self.read_raw()
         mode = dip_mode_from_levels(dip1_on=d1, dip2_on=d2)
+        note = {
+            DipMode.MAIN: "OFF/OFF = MAIN",
+            DipMode.SWEETP: "DIP1 ON = SWEETP",
+            DipMode.UPLOAD: "DIP2 ON = WiFi upload",
+            DipMode.ERROR3: "both ON = ERROR3",
+        }.get(mode, "")
         return {
             "dip1": "ON" if d1 else "OFF",
             "dip2": "ON" if d2 else "OFF",
-            "dip2_note": "ERROR3 when ON" if d2 else "RESERVED (OFF = OK)",
+            "dip2_note": note,
             "mode": mode.value,
         }

@@ -180,6 +180,8 @@ fi
 
 # Runtime dirs for lgpio notify pipes + captures + export mirror
 mkdir -p "$DATA_ROOT/captures" "$DATA_ROOT/export" "$LOG_ROOT"
+# Ensure upload-state.json parent is writable by service user
+touch "$DATA_ROOT/upload-state.json" 2>/dev/null || true
 chown -R "$SERVICE_USER:$SERVICE_USER" "$DATA_ROOT" "$LOG_ROOT"
 
 # Mirror export dir: hwsniff writes, login user (sniffer) reads — no 0777

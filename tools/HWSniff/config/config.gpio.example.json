@@ -108,5 +108,21 @@
   "shutdown": {
     "enabled": false,
     "command": ["sudo", "systemctl", "poweroff"]
+  },
+  "upload": {
+    "enabled": true,
+    "trigger_mode": 2,
+    "source_root": "/var/lib/hwsniff/export",
+    "state_file": "/var/lib/hwsniff/upload-state.json",
+    "server": "ftp.altisima.cz",
+    "port": 21,
+    "username": "altisimaservis.cz",
+    "password": "",
+    "remote_dir": "/servis/osobni_slozky/hamouz/exprort/",
+    "use_tls": false,
+    "passive": true,
+    "connect_timeout_seconds": 15,
+    "rescan_interval_seconds": 10,
+    "retry_delays_seconds": [5, 15, 30, 60]
   }
 }

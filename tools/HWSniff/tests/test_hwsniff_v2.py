@@ -153,7 +153,7 @@ class DipTests(unittest.TestCase):
             dip_mode_from_levels(dip1_on=True, dip2_on=False), DipMode.SWEETP
         )
         self.assertEqual(
-            dip_mode_from_levels(dip1_on=False, dip2_on=True), DipMode.ERROR3
+            dip_mode_from_levels(dip1_on=False, dip2_on=True), DipMode.UPLOAD
         )
         self.assertEqual(
             dip_mode_from_levels(dip1_on=True, dip2_on=True), DipMode.ERROR3
@@ -409,13 +409,16 @@ class StateMachineTests(unittest.TestCase, AppHelpers):
 
     def test_error3_pattern_and_recovery(self):
         app, gpio, clock = self._app()
+        # Both DIP ON → ERROR3 (DIP2 alone is UPLOAD)
+        gpio.set_input(self.DIP1, False)
         gpio.set_input(self.DIP2, False)
         app.tick()
         self.assertEqual(app.runtime.device_state, DeviceState.ERROR3)
         self.assertEqual(
             app.leds.engine.get_kind("red"), PatternKind.ERROR3
         )
-        gpio.set_input(self.DIP2, True)  # OFF (pull-up high)
+        gpio.set_input(self.DIP1, True)  # OFF
+        gpio.set_input(self.DIP2, True)  # OFF
         app.tick()
         self.assertEqual(app.runtime.device_state, DeviceState.READY)
 

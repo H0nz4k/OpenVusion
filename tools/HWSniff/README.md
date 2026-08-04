@@ -49,10 +49,11 @@ GPIO21 / pin 40 ── START ── GND
 |------|------|--------|
 | OFF | OFF | MAIN |
 | ON  | OFF | SWEETP |
-| OFF | ON  | ERROR3 |
+| OFF | ON  | **UPLOAD** (WiFi FTP of export bundles) |
 | ON  | ON  | ERROR3 |
 
-Boot requires DIP1 OFF + DIP2 OFF, otherwise ERROR3. DIP is monitored continuously; ERROR3 recovers without restart.
+Boot: MAIN (both OFF) or UPLOAD (DIP2 only). SWEETP/both-ON at boot → ERROR3.
+DIP is monitored continuously; ERROR3 / mode changes recover without restart.
 
 ## States & LEDs
 
@@ -152,6 +153,19 @@ After each successful tag capture, artifacts are packed into an uncompressed **`
 Primary archive is written atomically (`.tmp` + rename). Mirror copy runs only after
 primary success; mirror failures are logged and never delete the primary ZIP/tar.
 Installer creates the mirror dir as `hwsniff:sniffer` mode `2775` (writable by service, readable by login user).
+
+## WiFi upload mode (DIP2)
+
+DIP2 ON (DIP1 OFF) uploads finished bundles from **`collector.export_bundle_root`**
+only (not the mirror). WiFi association stays with NetworkManager; the app checks
+interface + IP + default route, then FTP/FTPS.
+
+State file: `/var/lib/hwsniff/upload-state.json` (survives reboot). Local files are
+never deleted after upload. FTP password: set in `/etc/hwsniff/config.json` **on the Pi**
+or via env `HWSNIFF_FTP_PASSWORD` — never commit secrets.
+
+LED cues (upload mode owns G/Y/R/B): chase while transferring; green success;
+yellow empty queue; blue = no WiFi; red = FTP error; Y/R = partial.
 
 ## Install / deploy
 

@@ -4,6 +4,8 @@
 
 ### Added
 
+- DIP2 **WiFi upload mode**: FTP/FTPS transfer of primary export bundles with
+  persistent `upload-state.json`, LED status patterns, and retry while DIP2 stays ON.
 - GPIO UART reader support via `preferred_serial: "/dev/serial0"` (9600 8N1),
   with `auto_detect` fallback and clearer port-busy diagnostics.
 - Export bundle mirror (`export_bundle_mirror_root`) and optional `logs/` packing

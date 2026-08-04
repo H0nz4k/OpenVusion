@@ -29,6 +29,7 @@ from .state import (
 )
 from .sweetp_bands import score_allows_read, thresholds_from_config
 from .sweetp_live import create_sweet_point
+from .upload import UploadService, load_upload_settings
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ class HeadlessApp:
         sleep: Callable[[float], None] | None = None,
         network: NetworkMonitor | None = None,
         reader_monitor: ReaderMonitor | None = None,
+        upload_service: UploadService | None = None,
         loop_forever: bool = True,
         force_mock: bool = False,
     ) -> None:
@@ -178,6 +180,11 @@ class HeadlessApp:
             sleep=self._sleep,
             force_mock=self._force_mock,
         )
+        self.upload = upload_service or UploadService(
+            load_upload_settings(self.config),
+            clock=self._clock,
+            sleep=self._sleep,
+        )
 
         self._gpio_ok = True
         self._cancel_phase: str | None = None
@@ -220,6 +227,10 @@ class HeadlessApp:
         ) else 1
 
     def close(self) -> None:
+        try:
+            self._leave_upload()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             self.sweet_point.stop()
         except Exception:  # noqa: BLE001
@@ -280,13 +291,20 @@ class HeadlessApp:
         self.runtime.wlan = self.network.status
         self.runtime.wlan_ip = self.network.ip
 
-        # DIP must be OFF/OFF at boot
-        if self.runtime.dip_mode == DipMode.ERROR3 or d1 or d2:
-            if self.runtime.dip_mode != DipMode.ERROR3:
-                # DIP1 ON at boot without DIP2 → still invalid per boot rule
-                log.error("Boot DIP not OFF/OFF — ERROR3")
+        # Boot rules: ERROR3 (both ON) / SWEETP-at-boot invalid;
+        # UPLOAD (DIP2) may start immediately; MAIN needs reader.
+        if self.runtime.dip_mode == DipMode.ERROR3:
             self._enter(DeviceState.ERROR3)
             _ = self.buttons.poll()
+            return
+        if self.runtime.dip_mode == DipMode.SWEETP:
+            log.error("Boot DIP1 ON — ERROR3 (start in MAIN or UPLOAD)")
+            self._enter(DeviceState.ERROR3)
+            _ = self.buttons.poll()
+            return
+        if self.runtime.dip_mode == DipMode.UPLOAD:
+            _ = self.buttons.poll()
+            self._enter_upload()
             return
 
         presence = self.reader_monitor.tick(force=True)
@@ -314,6 +332,8 @@ class HeadlessApp:
             self._tick_error2(now)
         elif st == DeviceState.ERROR3:
             pass  # wait for DIP recovery
+        elif st == DeviceState.UPLOAD:
+            pass  # reader not required during FTP upload
         elif self._poll_reader_hotplug(now):
             # READ stays active until collector drains; other states already ERROR2.
             if self.runtime.device_state != DeviceState.READ:
@@ -322,6 +342,10 @@ class HeadlessApp:
 
         for ev in self.buttons.poll():
             self._handle_button(ev)
+
+        if self.runtime.device_state == DeviceState.UPLOAD:
+            self._tick_upload_leds()
+            return
 
         if self.runtime.device_state in (
             DeviceState.SWEETP,
@@ -368,6 +392,7 @@ class HeadlessApp:
         )
 
         if mode == DipMode.ERROR3:
+            self._leave_upload()
             self._abort_active_work()
             self._enter(DeviceState.ERROR3)
             return
@@ -376,6 +401,16 @@ class HeadlessApp:
             # Recovery without restart
             self._recover_from_error3(mode)
             return
+
+        if mode == DipMode.UPLOAD:
+            if self.runtime.device_state != DeviceState.UPLOAD:
+                self._abort_active_work()
+                self._enter_upload()
+            return
+
+        # Leaving upload toward MAIN / SWEETP
+        if self.runtime.device_state == DeviceState.UPLOAD:
+            self._leave_upload()
 
         if mode == DipMode.SWEETP:
             if self.runtime.device_state != DeviceState.SWEETP:
@@ -386,6 +421,14 @@ class HeadlessApp:
         # MAIN
         if self.runtime.device_state == DeviceState.SWEETP:
             self._leave_sweetp()
+        elif self.runtime.device_state != DeviceState.READY:
+            # Return from upload / cancelled work to READY when possible
+            presence = self.reader_monitor.tick(force=True)
+            self.runtime.reader_port = presence.port
+            if presence.present:
+                self._enter(DeviceState.READY)
+            else:
+                self._enter(DeviceState.ERROR2)
 
     def _recover_from_error3(self, mode: DipMode) -> None:
         log.info("ERROR3 cleared — health check + resume mode=%s", mode.value)
@@ -400,6 +443,9 @@ class HeadlessApp:
                 reader_op="health",
             )
             return
+        if mode == DipMode.UPLOAD:
+            self._enter_upload()
+            return
         presence = self.reader_monitor.tick(force=True)
         self.runtime.reader_port = presence.port
         if not presence.present:
@@ -409,6 +455,27 @@ class HeadlessApp:
             self._enter_sweetp()
         else:
             self._enter(DeviceState.READY)
+
+    def _enter_upload(self) -> None:
+        log.info("Enter UPLOAD mode")
+        self._abort_active_work()
+        self._enter(DeviceState.UPLOAD)
+        self.upload.start()
+
+    def _leave_upload(self) -> None:
+        if self.upload.running or self.runtime.device_state == DeviceState.UPLOAD:
+            log.info("Leave UPLOAD mode")
+            self.upload.stop()
+
+    def _tick_upload_leds(self) -> None:
+        levels = self.upload.led_levels()
+        # Drive LEDs directly so chase patterns stay mutually exclusive
+        for name in LED_NAMES:
+            on = bool(levels.get(name))
+            self.leds.set_pattern(
+                name, PatternKind.ON if on else PatternKind.OFF
+            )
+        self.leds.tick()
 
     def _abort_active_work(self) -> None:
         self._awaiting_save = False
@@ -572,7 +639,13 @@ class HeadlessApp:
         st = self.runtime.device_state
         log.info("Button %s in %s", ev.value, st.value)
 
-        if st in (DeviceState.ERROR1, DeviceState.ERROR2, DeviceState.ERROR3, DeviceState.BOOT):
+        if st in (
+            DeviceState.ERROR1,
+            DeviceState.ERROR2,
+            DeviceState.ERROR3,
+            DeviceState.BOOT,
+            DeviceState.UPLOAD,
+        ):
             return
 
         if st == DeviceState.SWEETP:
@@ -609,7 +682,10 @@ class HeadlessApp:
 
     def _begin_positioning(self) -> None:
         if self.runtime.dip_mode != DipMode.MAIN:
-            log.info("START ignored — not MAIN")
+            log.info("START ignored — not MAIN (mode=%s)", self.runtime.dip_mode.value)
+            return
+        if self.runtime.device_state == DeviceState.UPLOAD or self.upload.running:
+            log.info("START ignored — upload mode active")
             return
         self.runtime.active_cycle_mode = DipMode.MAIN
         port = self.runtime.reader_port
@@ -958,6 +1034,9 @@ class HeadlessApp:
             self.leds.set_pattern("yellow", PatternKind.OFF)
         elif state == DeviceState.SWEETP:
             self.leds.set_pattern("yellow", PatternKind.OFF)
+        elif state == DeviceState.UPLOAD:
+            # Driven by _tick_upload_leds each loop
+            self.leds.all_off()
         elif state == DeviceState.SHUTDOWN:
             self.leds.set_pattern("green", PatternKind.SLOW)
             self.leds.set_pattern("red", PatternKind.SLOW)

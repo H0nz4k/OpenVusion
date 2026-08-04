@@ -19,12 +19,14 @@ class DeviceState(str, Enum):
     ERROR3 = "STATE_ERROR3"
     CANCELLED = "STATE_CANCELLED"
     SWEETP = "STATE_SWEETP"
+    UPLOAD = "STATE_UPLOAD"
     SHUTDOWN = "STATE_SHUTDOWN"
 
 
 class DipMode(str, Enum):
     MAIN = "MODE_MAIN"
     SWEETP = "MODE_SWEETP"
+    UPLOAD = "MODE_UPLOAD"  # DIP2 ON, DIP1 OFF — WiFi FTP upload
     ERROR3 = "MODE_ERROR3"
     SWEET_POINT = "MODE_SWEETP"  # legacy alias
 
