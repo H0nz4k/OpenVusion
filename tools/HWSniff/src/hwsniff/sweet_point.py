@@ -30,7 +30,7 @@ class SweetSample:
 
 
 class SweetPointService(Protocol):
-    def start(self, port: str | None = None) -> None: ...
+    def start(self, port: str | None = None) -> bool: ...
 
     def stop(self) -> None: ...
 
@@ -60,12 +60,13 @@ class MockSweetPoint:
         self._forced: SweetSample | None = None
         self.reader_error: str | None = None
 
-    def start(self, port: str | None = None) -> None:
+    def start(self, port: str | None = None) -> bool:
         del port
         self._running = True
         self.reader_error = None
         self._t0 = self._clock()
         self.tick()
+        return True
 
     def stop(self) -> None:
         self._running = False

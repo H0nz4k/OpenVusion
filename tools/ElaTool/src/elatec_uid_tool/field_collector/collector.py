@@ -207,6 +207,9 @@ class FieldCollector:
         )
         result = probe.run()
 
+        if self.config.summary_extra and result.output_dir:
+            self._merge_summary_extra(Path(result.output_dir), self.config.summary_extra)
+
         export_tar: str | None = None
         if (
             result.uid
@@ -306,6 +309,27 @@ class FieldCollector:
             self._sleep(self.config.poll_interval_seconds)
             if time.monotonic() > deadline:
                 raise SerialCommunicationError("Tag timeout")
+
+    @staticmethod
+    def _merge_summary_extra(output_dir: Path, extra: dict[str, Any]) -> None:
+        """Merge caller fields into summary.json before tar export."""
+        import json
+
+        path = output_dir / "summary.json"
+        try:
+            if path.is_file():
+                data = json.loads(path.read_text(encoding="utf-8"))
+            else:
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+            data.update(extra)
+            path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
 
     def _wait_for_removal_client(self, client: Any) -> None:
         """Return when the tag is gone. Require two consecutive misses."""

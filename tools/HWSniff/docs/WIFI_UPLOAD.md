@@ -38,7 +38,7 @@ Do **not** commit real passwords. Example for `/etc/hwsniff/config.json`:
   "port": 21,
   "username": "altisimaservis.cz",
   "password": "<DOPLNIT_LOKÁLNĚ>",
-  "remote_dir": "/servis/osobni_slozky/hamouz/exprort/",
+  "remote_dir": "/servis/osobni_slozky/hamouz/tag_exports/",
   "use_tls": false,
   "passive": true,
   "connect_timeout_seconds": 15,

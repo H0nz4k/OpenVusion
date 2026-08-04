@@ -34,6 +34,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
             "pull_up": True,
             "debounce_ms": 50,
             "shutdown_hold_seconds": 3,
+            "chord_hold_seconds": 5,
+            "chord_warn_seconds": 4,
         },
         "dip": {
             "dip1": 12,
@@ -91,7 +93,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "port": 21,
         "username": "altisimaservis.cz",
         "password": "",
-        "remote_dir": "/servis/osobni_slozky/hamouz/exprort/",
+        "remote_dir": "/servis/osobni_slozky/hamouz/tag_exports/",
         "use_tls": False,
         "passive": True,
         "connect_timeout_seconds": 15,
@@ -116,6 +118,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "shutdown": {
         "enabled": False,
         "command": ["sudo", "systemctl", "poweroff"],
+    },
+    "service_restart": {
+        "marker_path": "/run/hwsniff/service_restart",
     },
     "reader": {
         "auto_detect": True,

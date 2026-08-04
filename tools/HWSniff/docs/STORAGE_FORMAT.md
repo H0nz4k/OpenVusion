@@ -27,6 +27,27 @@
 
 One START → one tag → one capture directory → one export archive.
 
+## SweetP stats in `summary.json`
+
+When READ is accepted from POSITIONING, an immutable SweetP snapshot is merged
+into `summary.json` (and therefore into the export TAR) under `sweetp`:
+
+```json
+"sweetp": {
+  "score_at_accept": 78.513,
+  "band_at_accept": "good",
+  "minimum": 27.699,
+  "maximum": 78.523,
+  "average": 59.214,
+  "sample_count": 123,
+  "started_at": "…",
+  "accepted_at": "…"
+}
+```
+
+Only numeric tagged samples from the current positioning cycle are included.
+Captures without SweetP positioning keep backward-compatible empty/null stats.
+
 ## Export TAR (one tag → one archive)
 
 After each successful sniff of **one tag**, every artifact from that capture is

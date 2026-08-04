@@ -13,7 +13,9 @@
       "active_low": true,
       "pull_up": true,
       "debounce_ms": 50,
-      "shutdown_hold_seconds": 3
+      "shutdown_hold_seconds": 3,
+      "chord_hold_seconds": 5,
+      "chord_warn_seconds": 4
     },
     "dip": {
       "dip1": 12,
@@ -118,7 +120,7 @@
     "port": 21,
     "username": "altisimaservis.cz",
     "password": "",
-    "remote_dir": "/servis/osobni_slozky/hamouz/exprort/",
+    "remote_dir": "/servis/osobni_slozky/hamouz/tag_exports/",
     "use_tls": false,
     "passive": true,
     "connect_timeout_seconds": 15,

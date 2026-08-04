@@ -110,6 +110,8 @@ class CollectorConfig:
     label: str = "field"
     state: str = "field"
     notes: str = ""
+    # Merged into capture summary.json before export packing (e.g. SweetP stats).
+    summary_extra: dict[str, Any] | None = None
 
     def resolved_data_root(self) -> str:
         if self.data_root:

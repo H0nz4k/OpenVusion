@@ -50,8 +50,11 @@ class LedController:
         *,
         on_complete=None,
         count: int | None = None,
+        step_ms: int | None = None,
     ) -> None:
-        self.engine.set(name, kind, on_complete=on_complete, count=count)
+        self.engine.set(
+            name, kind, on_complete=on_complete, count=count, step_ms=step_ms
+        )
 
     def all_off(self) -> None:
         for name in LED_NAMES:

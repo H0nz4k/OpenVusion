@@ -19,6 +19,12 @@ from .logging_setup import setup_logging
 from .network import NetworkMonitor
 from .patterns import PatternKind, PatternTimings
 from .reader_monitor import ReaderMonitor
+from .service_restart import (
+    SERVICE_RESTART_EXIT_CODE,
+    consume_restart_marker,
+    marker_path_from_config,
+    write_restart_marker,
+)
 from .state import (
     CollectorOutcome,
     DeviceState,
@@ -29,9 +35,15 @@ from .state import (
 )
 from .sweetp_bands import score_allows_read, thresholds_from_config
 from .sweetp_live import create_sweet_point
+from .sweetp_stats import SweetPCycleStats
 from .upload import UploadService, load_upload_settings
 
 log = logging.getLogger(__name__)
+
+# After SweetP/collector releases UART, skip presence probes briefly.
+_UART_SETTLE_SECONDS = 0.75
+_CHORD_WARN_BLINK_MS = 125
+_CHORD_WARN_BLINKS = 4
 
 
 class HeadlessApp:
@@ -146,6 +158,8 @@ class HeadlessApp:
                 shutdown_hold_seconds=float(
                     btn_cfg.get("shutdown_hold_seconds", 3)
                 ),
+                chord_hold_seconds=float(btn_cfg.get("chord_hold_seconds", 5)),
+                chord_warn_seconds=float(btn_cfg.get("chord_warn_seconds", 4)),
             ),
             clock=self._clock,
         )
@@ -191,6 +205,14 @@ class HeadlessApp:
         self._awaiting_save = False
         self._read_complete_done = False
         self._reader_lost_during_capture = False
+        self._uart_owner: str | None = None  # "sweetp" | "collector"
+        self._uart_release_at: float | None = None
+        self._sweetp_stats = SweetPCycleStats()
+        self._sweetp_snapshot = None
+        self._chord_warning_active = False
+        self._chord_led_backup: dict[str, PatternKind] | None = None
+        self._restart_exit_code: int | None = None
+        self._restart_marker = marker_path_from_config(self.config)
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -222,6 +244,8 @@ class HeadlessApp:
                 break
             self._sleep(0.02)
         self.close()
+        if self._restart_exit_code is not None:
+            return int(self._restart_exit_code)
         return 0 if self.runtime.device_state not in (
             DeviceState.ERROR1,
         ) else 1
@@ -291,13 +315,14 @@ class HeadlessApp:
         self.runtime.wlan = self.network.status
         self.runtime.wlan_ip = self.network.ip
 
-        # Boot rules: ERROR3 (both ON) / SWEETP-at-boot invalid;
-        # UPLOAD (DIP2) may start immediately; MAIN needs reader.
+        # Boot rules: ERROR3 (both ON) / SWEETP-at-boot invalid on cold start;
+        # chord service-restart may leave a one-shot marker to resume DIP mode.
+        restart_resume = consume_restart_marker(self._restart_marker)
         if self.runtime.dip_mode == DipMode.ERROR3:
             self._enter(DeviceState.ERROR3)
             _ = self.buttons.poll()
             return
-        if self.runtime.dip_mode == DipMode.SWEETP:
+        if self.runtime.dip_mode == DipMode.SWEETP and not restart_resume:
             log.error("Boot DIP1 ON — ERROR3 (start in MAIN or UPLOAD)")
             self._enter(DeviceState.ERROR3)
             _ = self.buttons.poll()
@@ -308,12 +333,18 @@ class HeadlessApp:
             return
 
         presence = self.reader_monitor.tick(force=True)
-        self.runtime.reader_port = presence.port
-        self.runtime.reader_version = presence.version
+        if presence.present:
+            self.runtime.reader_port = presence.port
+            self.runtime.reader_version = presence.version
         _ = self.buttons.poll()
 
         if not presence.present:
             self._enter(DeviceState.ERROR2)
+            return
+
+        if self.runtime.dip_mode == DipMode.SWEETP and restart_resume:
+            log.info("Service restart resume — entering SWEETP from marker")
+            self._enter_sweetp()
             return
 
         self._enter(DeviceState.READY)
@@ -323,7 +354,19 @@ class HeadlessApp:
         if self.network.tick(now):
             self.runtime.wlan = self.network.status
             self.runtime.wlan_ip = self.network.ip
-            self._apply_wlan_led()
+            if not self._chord_warning_active:
+                self._apply_wlan_led()
+
+        # Chord has global priority — poll buttons before DIP/work handlers.
+        button_events = self.buttons.poll()
+        chord = self.buttons.chord_status()
+        if chord.cancelled:
+            self._cancel_chord_warning()
+        self._update_chord_warning(chord)
+        if ButtonEvent.RESTART_CHORD in button_events:
+            self._trigger_service_restart()
+            self.leds.tick(now)
+            return
 
         self._poll_dip()
 
@@ -340,11 +383,15 @@ class HeadlessApp:
                 self.leds.tick(now)
                 return
 
-        for ev in self.buttons.poll():
+        for ev in button_events:
+            if ev == ButtonEvent.RESTART_CHORD:
+                continue
             self._handle_button(ev)
 
         if self.runtime.device_state == DeviceState.UPLOAD:
-            self._tick_upload_leds()
+            if not self._chord_warning_active:
+                self._tick_upload_leds()
+            self.leds.tick(now)
             return
 
         if self.runtime.device_state in (
@@ -423,9 +470,17 @@ class HeadlessApp:
             self._leave_sweetp()
         elif self.runtime.device_state != DeviceState.READY:
             # Return from upload / cancelled work to READY when possible
+            if self._uart_busy():
+                if self.runtime.reader_port:
+                    self._enter(DeviceState.READY)
+                else:
+                    self._enter(DeviceState.ERROR2)
+                return
             presence = self.reader_monitor.tick(force=True)
-            self.runtime.reader_port = presence.port
-            if presence.present:
+            if presence.present and presence.port:
+                self.runtime.reader_port = presence.port
+                self._enter(DeviceState.READY)
+            elif self.runtime.reader_port:
                 self._enter(DeviceState.READY)
             else:
                 self._enter(DeviceState.ERROR2)
@@ -447,7 +502,8 @@ class HeadlessApp:
             self._enter_upload()
             return
         presence = self.reader_monitor.tick(force=True)
-        self.runtime.reader_port = presence.port
+        if presence.present and presence.port:
+            self.runtime.reader_port = presence.port
         if not presence.present:
             self._enter(DeviceState.ERROR2)
             return
@@ -459,6 +515,7 @@ class HeadlessApp:
     def _enter_upload(self) -> None:
         log.info("Enter UPLOAD mode")
         self._abort_active_work()
+        self._release_uart()
         self._enter(DeviceState.UPLOAD)
         self.upload.start()
 
@@ -484,6 +541,8 @@ class HeadlessApp:
             self.sweet_point.stop()
         except Exception:  # noqa: BLE001
             pass
+        if self._uart_owner == "sweetp":
+            self._release_uart()
         if self.collector.is_running():
             self.collector.request_stop()
             for _ in range(50):
@@ -492,23 +551,78 @@ class HeadlessApp:
                     break
                 self._sleep(0.02)
             _ = self.collector.get_result()
+        if self._uart_owner == "collector":
+            self._release_uart()
         self.runtime.active_cycle_mode = None
         self.runtime.collector_running = False
         self.runtime.read_step = 0
+        self._sweetp_stats.reset()
+        self._sweetp_snapshot = None
+
+    # ------------------------------------------------------------------ UART ownership
+
+    def _uart_busy(self) -> bool:
+        if self._uart_owner is not None:
+            return True
+        if self._uart_release_at is None:
+            return False
+        return (self._clock() - self._uart_release_at) < _UART_SETTLE_SECONDS
+
+    def _claim_uart(self, owner: str) -> None:
+        self._uart_owner = owner
+        self._uart_release_at = None
+
+    def _release_uart(self) -> None:
+        self._uart_owner = None
+        self._uart_release_at = self._clock()
+
+    def _remember_port(self, port: str | None, version: str | None = None) -> None:
+        if port:
+            self.runtime.reader_port = port
+            if version:
+                self.runtime.reader_version = version
 
     # ------------------------------------------------------------------ SweetP
 
-    def _enter_sweetp(self) -> None:
+    def _enter_sweetp(self) -> bool:
+        """Enter SWEETP only with a valid port. Otherwise stay/go ERROR2."""
+        if self._uart_owner == "collector":
+            log.warning("SweetP deferred — collector owns UART")
+            self._enter(DeviceState.ERROR2)
+            return False
         port = self.runtime.reader_port
-        if port is None:
+        if not port and not self._uart_busy():
             presence = self.reader_monitor.tick(force=True)
-            port = presence.port
-            self.runtime.reader_port = port
-        self.sweet_point.start(port)
+            if presence.present and presence.port:
+                self._remember_port(presence.port, presence.version)
+                port = presence.port
+        if not port:
+            log.warning("SweetP refused — no reader port (DIP=%s)", self.runtime.dip_mode.value)
+            self._enter(DeviceState.ERROR2)
+            return False
+        if self._uart_owner == "sweetp":
+            try:
+                self.sweet_point.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            self._release_uart()
+        self._claim_uart("sweetp")
+        started = self.sweet_point.start(port)
+        if not started:
+            self._release_uart()
+            self._enter(DeviceState.ERROR2)
+            return False
         self._enter(DeviceState.SWEETP)
+        return True
 
     def _leave_sweetp(self) -> None:
-        self.sweet_point.stop()
+        """Stop SweetP without treating UART release as reader unplug."""
+        try:
+            self.sweet_point.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        if self._uart_owner == "sweetp":
+            self._release_uart()
         self.runtime.sweet_band = SweetBand.NONE
         self.runtime.sweet_score = None
         self.runtime.sweet_has_tag = False
@@ -523,12 +637,19 @@ class HeadlessApp:
                 reader_op="health",
             )
             return
-        presence = self.reader_monitor.tick(force=True)
-        self.runtime.reader_port = presence.port
-        if not presence.present:
+        # Keep last known port; READY hotplug reconfirms after settle.
+        if self.runtime.reader_port:
+            self._enter(DeviceState.READY)
+            return
+        if self._uart_busy():
             self._enter(DeviceState.ERROR2)
             return
-        self._enter(DeviceState.READY)
+        presence = self.reader_monitor.tick(force=True)
+        if presence.present and presence.port:
+            self._remember_port(presence.port, presence.version)
+            self._enter(DeviceState.READY)
+        else:
+            self._enter(DeviceState.ERROR2)
 
     def _tick_sweet(self, now: float) -> None:
         sample = self.sweet_point.tick(now)
@@ -538,6 +659,7 @@ class HeadlessApp:
         self.runtime.sweet_has_tag = sample.has_tag
         if self.runtime.device_state == DeviceState.POSITIONING:
             self.runtime.positioning_score = sample.score
+            self._sweetp_stats.add_sample(sample.score, has_tag=sample.has_tag)
         if sample.band != prev_band:
             log.info(
                 "SweetP band %s → %s score=%s",
@@ -545,7 +667,8 @@ class HeadlessApp:
                 sample.band.value,
                 sample.score,
             )
-        self._apply_sweet_leds(sample.band)
+        if not self._chord_warning_active:
+            self._apply_sweet_leds(sample.band)
 
     def _sweet_reader_failed(self) -> bool:
         err = getattr(self.sweet_point, "reader_error", None)
@@ -554,19 +677,19 @@ class HeadlessApp:
     def _poll_reader_hotplug(self, now: float) -> bool:
         """Monitor TWN4 presence. Return True if transitioned to ERROR2.
 
-        Only while READY. During SWEETP / POSITIONING / READ the appliance owns
-        the UART exclusively; a second open looks like "busy"/missing and must
-        not flap ERROR2. Serial loss there is reported via SweetP/collector.
+        Only while READY and UART is free. During SWEETP / POSITIONING / READ
+        the appliance owns the UART exclusively.
         """
         st = self.runtime.device_state
         if st != DeviceState.READY:
             return False
+        if self._uart_busy():
+            return False
         presence = self.reader_monitor.tick(now)
         if presence.present:
-            self.runtime.reader_port = presence.port
-            if presence.version:
-                self.runtime.reader_version = presence.version
+            self._remember_port(presence.port, presence.version)
             return False
+        # Do not wipe known port on a single failed probe after UART release.
         self._on_reader_lost(st)
         return True
 
@@ -577,10 +700,13 @@ class HeadlessApp:
                 self.sweet_point.stop()
             except Exception:  # noqa: BLE001
                 pass
+            if self._uart_owner == "sweetp":
+                self._release_uart()
             self.runtime.active_cycle_mode = None
             self.runtime.sweet_band = SweetBand.NONE
             self.runtime.sweet_score = None
             self.runtime.sweet_has_tag = False
+            self._sweetp_stats.reset()
             self._enter(DeviceState.ERROR2)
             return
         if st == DeviceState.READY:
@@ -592,6 +718,8 @@ class HeadlessApp:
                 self.collector.request_stop()
             else:
                 self.runtime.active_cycle_mode = None
+                if self._uart_owner == "collector":
+                    self._release_uart()
                 self._enter(DeviceState.ERROR2)
             return
 
@@ -674,14 +802,21 @@ class HeadlessApp:
             return
         self.runtime.active_cycle_mode = DipMode.MAIN
         port = self.runtime.reader_port
-        if port is None:
+        if not port and not self._uart_busy():
             presence = self.reader_monitor.tick(force=True)
-            port = presence.port
-            self.runtime.reader_port = port
-            if not presence.present:
-                self._enter(DeviceState.ERROR2)
-                return
-        self.sweet_point.start(port)
+            if presence.present and presence.port:
+                self._remember_port(presence.port, presence.version)
+                port = presence.port
+        if not port:
+            self._enter(DeviceState.ERROR2)
+            return
+        self._sweetp_stats.reset()
+        self._sweetp_snapshot = None
+        self._claim_uart("sweetp")
+        if not self.sweet_point.start(port):
+            self._release_uart()
+            self._enter(DeviceState.ERROR2)
+            return
         self._enter(DeviceState.POSITIONING)
 
     def _try_begin_read(self) -> None:
@@ -697,22 +832,45 @@ class HeadlessApp:
             )
             return
         self.runtime.positioning_score = score
-        log.info("READ accepted with SweetP score=%s", score)
+        band = self.runtime.sweet_band.value if self.runtime.sweet_band else None
+        snapshot = self._sweetp_stats.freeze(
+            score_at_accept=score, band_at_accept=band
+        )
+        self._sweetp_snapshot = snapshot
+        log.info(
+            "READ accepted with SweetP score=%s band=%s samples=%s",
+            snapshot.score_at_accept,
+            snapshot.band_at_accept,
+            snapshot.sample_count,
+        )
         # Release SweetP before opening capture serial
         self.sweet_point.stop()
+        if self._uart_owner == "sweetp":
+            self._release_uart()
         self.runtime.read_step = 0
         self._awaiting_save = False
         self._read_complete_done = False
         self._reader_lost_during_capture = False
+        if not self.runtime.reader_port:
+            self._enter(DeviceState.ERROR2)
+            return
+        self._claim_uart("collector")
         self._enter(DeviceState.READ)
         self.runtime.collector_running = True
-        self.collector.start(DipMode.MAIN, port=self.runtime.reader_port)
+        self.collector.start(
+            DipMode.MAIN,
+            port=self.runtime.reader_port,
+            summary_extra={"sweetp": snapshot.to_dict()},
+        )
 
     def _request_cancel(self) -> None:
         log.info("STOP → request_stop / cancel")
         st = self.runtime.device_state
         if st == DeviceState.POSITIONING:
             self.sweet_point.stop()
+            if self._uart_owner == "sweetp":
+                self._release_uart()
+            self._sweetp_stats.reset()
             self._begin_cancel_sequence()
             return
         if self.collector.is_running():
@@ -799,6 +957,8 @@ class HeadlessApp:
         self.runtime.last_outcome = result.outcome
         self.runtime.collector_running = False
         self.runtime.locked_uid = result.uid
+        if self._uart_owner == "collector":
+            self._release_uart()
         log.info(
             "Collector result: %s uid=%s dir=%s",
             result.outcome.value,
@@ -812,10 +972,11 @@ class HeadlessApp:
             return
 
         if result.outcome == CollectorOutcome.FAILED and not result.fatal_save:
-            presence = self.reader_monitor.tick(force=True)
-            if not presence.present:
-                self._persist_then_error2(result)
-                return
+            if not self._uart_busy():
+                presence = self.reader_monitor.tick(force=True)
+                if not presence.present:
+                    self._persist_then_error2(result)
+                    return
 
         if result.outcome == CollectorOutcome.CANCELLED:
             self._begin_cancel_sequence()
@@ -845,11 +1006,14 @@ class HeadlessApp:
             )
             return
 
-        # SUCCESS or PARTIAL → READY (or ERROR2 if reader gone after SAVE)
+        # SUCCESS or PARTIAL → READY / SWEETP (keep known port across UART settle)
         self.runtime.active_cycle_mode = None
-        presence = self.reader_monitor.tick(force=True)
-        self.runtime.reader_port = presence.port
-        if not presence.present:
+        self._sweetp_snapshot = None
+        if not self._uart_busy():
+            presence = self.reader_monitor.tick(force=True)
+            if presence.present and presence.port:
+                self._remember_port(presence.port, presence.version)
+        if not self.runtime.reader_port:
             self._enter(DeviceState.ERROR2)
             return
         if self.runtime.dip_mode == DipMode.SWEETP:
@@ -864,11 +1028,15 @@ class HeadlessApp:
         self._reader_lost_during_capture = False
         self.runtime.active_cycle_mode = None
         self.runtime.collector_running = False
+        if self._uart_owner == "collector":
+            self._release_uart()
         self._enter(DeviceState.ERROR2)
 
     # ------------------------------------------------------------------ ERROR2
 
     def _tick_error2(self, now: float) -> None:
+        if self._uart_busy():
+            return
         presence = self.reader_monitor.tick(now)
         if not presence.present:
             return
@@ -876,8 +1044,7 @@ class HeadlessApp:
             "Reader hotplug → health check → resume (DIP=%s)",
             self.runtime.dip_mode.value,
         )
-        self.runtime.reader_port = presence.port
-        self.runtime.reader_version = presence.version
+        self._remember_port(presence.port, presence.version)
         self._reader_lost_during_capture = False
         report = run_health_checks(
             gpio_ok=self._gpio_ok,
@@ -892,6 +1059,9 @@ class HeadlessApp:
             return
         if self.runtime.dip_mode == DipMode.ERROR3:
             self._enter(DeviceState.ERROR3)
+            return
+        if self.runtime.dip_mode == DipMode.UPLOAD:
+            self._enter_upload()
             return
         if self.runtime.dip_mode == DipMode.SWEETP:
             self._enter_sweetp()
@@ -957,12 +1127,88 @@ class HeadlessApp:
             self._enter(DeviceState.ERROR3)
         elif self.runtime.dip_mode == DipMode.SWEETP:
             self._enter_sweetp()
+        elif self.runtime.reader_port:
+            self._enter(DeviceState.READY)
+        elif self._uart_busy():
+            self._enter(DeviceState.ERROR2)
         else:
             presence = self.reader_monitor.tick(force=True)
-            if not presence.present:
-                self._enter(DeviceState.ERROR2)
-            else:
+            if presence.present and presence.port:
+                self._remember_port(presence.port, presence.version)
                 self._enter(DeviceState.READY)
+            else:
+                self._enter(DeviceState.ERROR2)
+
+    # ------------------------------------------------------------------ service restart chord
+
+    def _update_chord_warning(self, chord) -> None:
+        if chord.warning and not self._chord_warning_active:
+            self._chord_warning_active = True
+            self._chord_led_backup = {
+                name: self.leds.engine.get_kind(name) for name in LED_NAMES
+            }
+            self.leds.set_pattern("green", PatternKind.OFF)
+            self.leds.set_pattern("yellow", PatternKind.OFF)
+            self.leds.set_pattern(
+                "red",
+                PatternKind.COUNT_BLINK,
+                count=_CHORD_WARN_BLINKS,
+                step_ms=_CHORD_WARN_BLINK_MS,
+            )
+            self.leds.set_pattern("blue", PatternKind.OFF)
+        elif not chord.both_held and not chord.warning and self._chord_warning_active:
+            if not chord.fired:
+                self._cancel_chord_warning()
+
+    def _cancel_chord_warning(self) -> None:
+        if not self._chord_warning_active:
+            return
+        self._chord_warning_active = False
+        backup = self._chord_led_backup
+        self._chord_led_backup = None
+        if backup:
+            for name, kind in backup.items():
+                self.leds.set_pattern(name, kind)
+        else:
+            self._apply_state_leds(self.runtime.device_state)
+
+    def _trigger_service_restart(self) -> None:
+        log.info("Service restart chord triggered")
+        self._chord_warning_active = False
+        self._chord_led_backup = None
+        write_restart_marker(self._restart_marker)
+        try:
+            self._leave_upload()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.sweet_point.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        if self.collector.is_running():
+            try:
+                self.collector.request_stop()
+                for _ in range(50):
+                    self.collector.tick(self._clock())
+                    if not self.collector.is_running():
+                        break
+                    self._sleep(0.02)
+                _ = self.collector.get_result()
+            except Exception:  # noqa: BLE001
+                pass
+        self._uart_owner = None
+        self._uart_release_at = None
+        try:
+            self.leds.all_off()
+        except Exception:  # noqa: BLE001
+            pass
+        for handler in logging.root.handlers:
+            try:
+                handler.flush()
+            except Exception:  # noqa: BLE001
+                pass
+        self._restart_exit_code = SERVICE_RESTART_EXIT_CODE
+        self._stop_loop = True
 
     # ------------------------------------------------------------------ LEDs
 
@@ -985,6 +1231,8 @@ class HeadlessApp:
         self._apply_wlan_led()
 
     def _apply_state_leds(self, state: DeviceState) -> None:
+        if self._chord_warning_active:
+            return
         if state == DeviceState.BOOT:
             self.leds.all_off()
         elif state == DeviceState.READY:

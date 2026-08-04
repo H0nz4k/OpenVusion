@@ -20,7 +20,7 @@ class UploadSettings:
     port: int = 21
     username: str = "altisimaservis.cz"
     password: str = ""
-    remote_dir: str = "/servis/osobni_slozky/hamouz/exprort/"
+    remote_dir: str = "/servis/osobni_slozky/hamouz/tag_exports/"
     use_tls: bool = False
     passive: bool = True
     connect_timeout_seconds: float = 15.0
@@ -96,7 +96,7 @@ def load_upload_settings(config: dict[str, Any] | None) -> UploadSettings:
         username=str(section.get("username", "altisimaservis.cz")),
         password=password,
         remote_dir=str(
-            section.get("remote_dir", "/servis/osobni_slozky/hamouz/exprort/")
+            section.get("remote_dir", "/servis/osobni_slozky/hamouz/tag_exports/")
         ),
         use_tls=bool(section.get("use_tls", False)),
         passive=bool(section.get("passive", True)),

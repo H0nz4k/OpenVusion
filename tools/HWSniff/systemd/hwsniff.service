@@ -16,6 +16,7 @@ Environment=PYTHONUNBUFFERED=1
 Environment=SDL_VIDEODRIVER=kmsdrm
 EnvironmentFile=-/etc/hwsniff/display.env
 ExecStart=/opt/Sniff/.venv/bin/python -m hwsniff --config /etc/hwsniff/config.json
+# on-failure: covers crash + intentional chord restart (exit 75).
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=40

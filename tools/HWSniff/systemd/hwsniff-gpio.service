@@ -13,10 +13,14 @@ WorkingDirectory=/var/lib/hwsniff
 Environment=PYTHONUNBUFFERED=1
 Environment=HOME=/var/lib/hwsniff
 ExecStart=/opt/Sniff/.venv/bin/python -m hwsniff --config /etc/hwsniff/config.json
+# on-failure: covers crash + intentional chord restart (exit 75).
 Restart=on-failure
 RestartSec=2
 # GPIO via gpio group; TWN4 USB serial via dialout
 SupplementaryGroups=gpio dialout
+RuntimeDirectory=hwsniff
+StateDirectory=hwsniff
+LogsDirectory=hwsniff
 
 [Install]
 WantedBy=multi-user.target

@@ -46,14 +46,15 @@ class LiveSweetPoint:
         self._reader_error: str | None = None
         self._running_idle = False
 
-    def start(self, port: str | None = None) -> None:
+    def start(self, port: str | None = None) -> bool:
         if self.is_running():
-            return
+            return True
         if not port:
-            log.warning("LiveSweetPoint.start without port — idle no-tag")
+            log.warning("LiveSweetPoint.start without port — refused")
             self._port = None
-            self._running_idle = True
-            return
+            self._running_idle = False
+            self._reader_error = "no_reader_port"
+            return False
         self._running_idle = False
         self._port = port
         self._cancel.clear()
@@ -63,6 +64,7 @@ class LiveSweetPoint:
         )
         self._thread.start()
         log.info("SweetP live started on %s", port)
+        return True
 
     def stop(self) -> None:
         self._cancel.set()
@@ -71,14 +73,13 @@ class LiveSweetPoint:
             thread.join(timeout=5.0)
         self._thread = None
         self._running_idle = False
+        self._reader_error = None
         with self._lock:
             self._sample = SweetSample(None, SweetBand.NONE, False)
             self._band = SweetBand.NONE
         log.info("SweetP live stopped")
 
     def is_running(self) -> bool:
-        if getattr(self, "_running_idle", False):
-            return True
         return self._thread is not None and self._thread.is_alive()
 
     def get_sample(self) -> SweetSample:

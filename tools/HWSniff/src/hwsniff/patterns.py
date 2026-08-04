@@ -30,6 +30,7 @@ class _Channel:
     finished: bool = False
     on_complete: Callable[[], None] | None = None
     count: int | None = None
+    step_ms: int | None = None
 
 
 @dataclass
@@ -62,6 +63,7 @@ class PatternEngine:
         *,
         on_complete: Callable[[], None] | None = None,
         count: int | None = None,
+        step_ms: int | None = None,
     ) -> None:
         k = PatternKind(kind) if not isinstance(kind, PatternKind) else kind
         self._channels[name] = _Channel(
@@ -70,6 +72,7 @@ class PatternEngine:
             finished=False,
             on_complete=on_complete,
             count=count,
+            step_ms=step_ms,
         )
 
     def clear(self, name: str) -> None:
@@ -152,7 +155,7 @@ class PatternEngine:
             period = max(1, t.border_ms * 2)
             return (elapsed_ms % period) >= t.border_ms, False
         if ch.kind == PatternKind.COUNT_BLINK:
-            step = max(1, t.count_blink_ms)
+            step = max(1, int(ch.step_ms) if ch.step_ms is not None else t.count_blink_ms)
             n = ch.count if ch.count is not None else t.count_blink_count
             n = max(1, int(n))
             # Each cycle = ON step + OFF step
