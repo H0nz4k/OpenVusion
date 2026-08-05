@@ -34,6 +34,150 @@ The tested EEPROM capture contained 226 pages and completed successfully.
 
 This remains the known-good reference path for HWSniff/PCSniff/ElaTool.
 
+## Physical teardown of the known NTAG/imagotag target
+
+A destructive teardown of the known-good tag was performed after a successful full capture.
+
+### Confirmed PCB markings
+
+The PCB is marked:
+
+```text
+imagotag
+RFRTx024E
+```
+
+The main RF/MCU device is clearly marked:
+
+```text
+Texas Instruments
+CC2510F32
+```
+
+This is a major confirmation for the RF architecture of this tag family.
+
+### Confirmed RF capability
+
+The CC2510F32 is a Texas Instruments 8051-based SoC with an integrated proprietary 2.4 GHz transceiver.
+
+Therefore, for this imagotag family, 2.4 GHz operation is no longer only a hypothesis: the hardware directly confirms the presence of a 2.4 GHz RF subsystem.
+
+Important consequence:
+
+- this radio path is **not the same thing as the NFC/NTAG path**;
+- the known NTAG I²C Plus 1K interface and the 2.4 GHz radio should be treated as separate channels;
+- this particular RF architecture is based on the CC2510/CC2500 family and must not automatically be classified as IEEE 802.15.4.
+
+The CC2510 family supports proprietary 2.4 GHz packet radio operation such as 2-FSK/GFSK/MSK-class modulation rather than being a native 802.15.4 radio.
+
+### Architectural model after teardown
+
+Current working model:
+
+```text
+                   +----------------------+
+                   |   imagotag ESL       |
+                   |                      |
+NFC / service ---> | NTAG I2C Plus 1K    |
+                   |          |           |
+                   |          | local bus |
+                   |          v           |
+2.4 GHz RF <-----> | TI CC2510F32         |
+                   |          |           |
+                   |          +--> display electronics
+                   |          +--> front indicator LEDs
+                   +----------------------+
+```
+
+The exact internal connection between the NTAG and CC2510 is not yet electrically traced, so the local-bus arrow remains a working architectural inference.
+
+### Front optical components
+
+Two front-facing optical components are visible at the top edge of the PCB.
+
+Based on package appearance and PCB placement, the current interpretation is:
+
+- one likely white LED;
+- one likely multi-die / RGB indicator LED.
+
+They should currently be documented as **front indicator LEDs**, not sensors.
+
+This remains visual identification only until electrically tested or traced.
+
+### E-paper persistence after battery removal
+
+Removing the battery did not clear or visibly reset the displayed image.
+
+This must **not** be interpreted as proof that the MCU remained powered.
+
+E-paper is bistable and normally retains its last image without power. The expected interpretation is therefore:
+
+```text
+battery removed
+→ MCU/RF likely loses power and resets
+→ e-paper retains the last rendered image
+```
+
+Future reset verification should use RF behavior, current consumption or another active signal rather than display persistence.
+
+### NFC structure visible on PCB
+
+A large printed loop/coil structure is visible on the reverse side of the PCB and is consistent with the physical presence of an NFC antenna structure.
+
+This matches the already verified NTAG I²C Plus 1K capture path.
+
+### Additional ICs and test points
+
+The PCB contains:
+
+- a small 8-pin IC adjacent to the CC2510;
+- several accessible test pads;
+- a crystal close to the CC2510;
+- RF matching/passive components;
+- e-paper flex connector;
+- multiple battery contacts.
+
+The 8-pin IC is not yet positively identified. Because the tag is already known to contain NTAG I²C Plus functionality, it is an interesting candidate for further identification, but this must not be recorded as confirmed without readable package marking or electrical tracing.
+
+### RF investigation consequence
+
+For this specific imagotag/CC2510 family, a pure IEEE 802.15.4 sniffer is not necessarily the correct first tool.
+
+A more appropriate investigation path is CC2500/CC2510-compatible proprietary 2.4 GHz sniffing, for example using compatible TI tooling/hardware where available.
+
+The desired next passive RF investigation is:
+
+```text
+identify active channel/frequency
+→ determine modulation/bitrate
+→ capture packet timing and framing
+→ identify addresses / repeated fields
+→ correlate RF traffic with known NFC UID
+→ observe behavior during a real display update
+```
+
+No transmission is required for this phase; passive capture is sufficient.
+
+### New confirmed profile for this family
+
+```text
+Vendor / family: imagotag / SES-imagotag family
+PCB marking: RFRTx024E
+Main MCU/RF: TI CC2510F32
+RF band: 2.4 GHz proprietary radio
+NFC: NTAG I2C Plus 1K (physically verified by capture)
+Display: e-paper, image persists without battery power
+Front optics: likely indicator LEDs; exact type not yet electrically verified
+```
+
+This family should now be treated as a dual-interface target:
+
+```text
+NFC reconnaissance / memory capture
++
+proprietary 2.4 GHz RF reconnaissance
+```
+
 ## Field finding: SOLUM ESL in Albert
 
 Field testing on 2026-08-05 found electronic shelf labels in an Albert store that do **not** behave like the known NTAG I²C Plus target.
@@ -183,4 +327,17 @@ Whenever a new physical tag family is encountered, record:
 - what is inferred
 - next safe read-only probes
 
-This document should be updated as new field captures are obtained.
+For teardown work, additionally record:
+
+- PCB identifiers/revisions
+- MCU/RF part number
+- radio family/band
+- antenna structures
+- NFC IC/antenna if identifiable
+- display part number
+- power architecture
+- LEDs/sensors
+- debug/test pads
+- high-resolution photos of both PCB sides
+
+This document should be updated as new field captures and hardware findings are obtained.
