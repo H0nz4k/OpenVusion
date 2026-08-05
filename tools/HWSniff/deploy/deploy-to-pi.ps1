@@ -166,7 +166,7 @@ try {
     $null = robocopy $HwsniffRoot $stage /E /XD .venv __pycache__ .git deploy\dist captures /XF *.pyc /NFL /NDL /NJH /NJS /nc /ns /np
     if ($LASTEXITCODE -ge 8) { throw "robocopy failed (exit $LASTEXITCODE)" }
 
-    # Quick used to skip ElaTool → CollectorConfig lagged behind HWSniff.
+    # Quick used to skip ElaTool -> CollectorConfig lagged behind HWSniff.
     $elaSrc = Join-Path $RepoRoot "tools\ElaTool"
     $elaDst = Join-Path $stage "_vendor\ElaTool"
     if (Test-Path (Join-Path $elaSrc "src\elatec_uid_tool")) {
@@ -175,7 +175,7 @@ try {
         $null = robocopy $elaSrc $elaDst /E /XD .venv __pycache__ .git captures dist build *.egg-info /XF *.pyc /NFL /NDL /NJH /NJS /nc /ns /np
         if ($LASTEXITCODE -ge 8) { throw "robocopy ElaTool failed (exit $LASTEXITCODE)" }
     } else {
-        Write-Warning "ElaTool source missing at $elaSrc — Pi vendor will not be updated"
+        Write-Warning "ElaTool source missing at $elaSrc - Pi vendor will not be updated"
     }
 
     $helperSrc = Join-Path $DeployDir "remote-quick-update.sh"

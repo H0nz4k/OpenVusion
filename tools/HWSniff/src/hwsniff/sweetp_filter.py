@@ -9,8 +9,8 @@ from typing import Any, Deque
 
 @dataclass(frozen=True)
 class SweetPFilterConfig:
-    fast_alpha: float = 0.60
-    stable_alpha: float = 0.20
+    fast_alpha: float = 0.75
+    stable_alpha: float = 0.25
     trend_window_samples: int = 3
     trend_deadband_points_per_second: float = 8.0
     trend_strong_points_per_second: float = 40.0
@@ -38,8 +38,8 @@ class SweetPFilterConfig:
 def filter_config_from_sweet(sweet: dict[str, Any] | None) -> SweetPFilterConfig:
     s = sweet or {}
     return SweetPFilterConfig(
-        fast_alpha=_clamp_alpha(float(s.get("fast_alpha", 0.60))),
-        stable_alpha=_clamp_alpha(float(s.get("stable_alpha", 0.20))),
+        fast_alpha=_clamp_alpha(float(s.get("fast_alpha", 0.75))),
+        stable_alpha=_clamp_alpha(float(s.get("stable_alpha", 0.25))),
         trend_window_samples=max(2, int(s.get("trend_window_samples", 3))),
         trend_deadband_points_per_second=max(
             0.0, float(s.get("trend_deadband_points_per_second", 8.0))
@@ -113,22 +113,55 @@ class SweetPDualFilter:
             self._t0 = now
         t_ms = int(max(0.0, (now - self._t0) * 1000.0))
 
-        if not has_tag or raw_score is None:
+        if not has_tag:
             self._misses += 1
             if self._misses >= self.cfg.no_tag_confirm_samples:
                 self._fast = None
                 self._stable = None
                 self._hist.clear()
                 self._has_tag = False
+            elif raw_score is not None and self._has_tag:
+                # Soft update: declining short-window quality while presence held.
+                value = float(raw_score)
+                if self._fast is None:
+                    self._fast = value
+                    self._stable = value
+                else:
+                    a_f = self.cfg.fast_alpha
+                    a_s = self.cfg.stable_alpha
+                    self._fast = a_f * value + (1.0 - a_f) * self._fast
+                    assert self._stable is not None
+                    self._stable = a_s * value + (1.0 - a_s) * self._stable
+                self._hist.append((now, self._fast))
+            # Hold last scores + has_tag until loss is confirmed.
+            present = self._has_tag
+            trend_pps = direction = blink_ms = None
+            if present and len(self._hist) >= 2:
+                trend_pps, direction, blink_ms = self._compute_trend()
+            self._seq += 1
+            return FilterTick(
+                raw_score=float(raw_score) if (present and raw_score is not None) else None,
+                fast_score=self._fast if present else None,
+                stable_score=self._stable if present else None,
+                trend_pps=trend_pps,
+                trend_direction=direction or "stable",
+                blink_interval_ms=blink_ms,
+                has_tag=present,
+                seq=self._seq,
+                t_ms=t_ms,
+            )
+
+        if raw_score is None:
+            # Tagged but no score — treat like a soft miss without clearing.
             self._seq += 1
             return FilterTick(
                 raw_score=None,
-                fast_score=self._fast if self._has_tag else None,
-                stable_score=self._stable if self._has_tag else None,
+                fast_score=self._fast,
+                stable_score=self._stable,
                 trend_pps=None,
                 trend_direction="stable",
                 blink_interval_ms=None,
-                has_tag=False,
+                has_tag=self._has_tag,
                 seq=self._seq,
                 t_ms=t_ms,
             )

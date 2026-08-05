@@ -694,10 +694,16 @@ class HeadlessApp:
                 f"{sample.fast_score:.1f}" if sample.fast_score is not None else "n/a",
             )
         if not self._chord_warning_active:
+            # LEDs follow fast_score (snappy meter); READ still uses stable.
+            led_score = (
+                sample.fast_score
+                if sample.fast_score is not None
+                else sample.score
+            )
             self._apply_sweet_leds(
                 sample.band,
-                trend_direction=sample.trend_direction,
-                blink_interval_ms=sample.blink_interval_ms,
+                score=led_score,
+                has_tag=sample.has_tag,
             )
 
     def _sweet_reader_failed(self) -> bool:
@@ -760,103 +766,49 @@ class HeadlessApp:
         self,
         band: SweetBand,
         *,
+        score: float | None = None,
+        has_tag: bool = False,
         trend_direction: str = "stable",
         blink_interval_ms: int | None = None,
     ) -> None:
-        """Base band from stable_score + optional trend overlay from fast_score."""
-        pulse = int(self._filter_cfg.trend_pulse_ms)
-        improving = trend_direction == "improving" and blink_interval_ms is not None
-        worsening = trend_direction == "worsening" and blink_interval_ms is not None
-        # Collision: same-color overlay is invisible — keep solid base.
-        if band == SweetBand.GOOD and improving:
-            improving = False
-        if band == SweetBand.BAD and worsening:
-            worsening = False
+        """Continuous R/Y/G blink meter from fast_score (band kept for READ/logs)."""
+        del band, trend_direction, blink_interval_ms  # legacy kwargs ignored
+        from .sweetp_leds import plan_sweetp_leds
 
-        if band == SweetBand.GOOD:
-            self.leds.set_pattern("green", PatternKind.ON)
-            self.leds.set_pattern("yellow", PatternKind.OFF)
-            if worsening:
+        thr = self._thresholds
+        plan = plan_sweetp_leds(
+            score,
+            has_tag=has_tag,
+            green_min=thr.green_min,
+            yellow_min=thr.yellow_min,
+            borderline_min=thr.borderline_min,
+        )
+
+        def _set(name: str, kind: PatternKind, period: int | None) -> None:
+            if kind == PatternKind.PERIODIC_PULSE and period is not None:
                 self.leds.set_pattern(
-                    "red",
-                    PatternKind.PERIODIC_PULSE,
-                    period_ms=int(blink_interval_ms),
-                    pulse_ms=pulse,
+                    name,
+                    kind,
+                    period_ms=int(period),
+                    pulse_ms=int(plan.pulse_ms),
                 )
-                self._sweet_trend_active = True
             else:
-                self.leds.set_pattern("red", PatternKind.OFF)
-                self._sweet_trend_active = False
-        elif band == SweetBand.USABLE:
-            self.leds.set_pattern("yellow", PatternKind.ON)
-            if improving:
-                self.leds.set_pattern(
-                    "green",
-                    PatternKind.PERIODIC_PULSE,
-                    period_ms=int(blink_interval_ms),
-                    pulse_ms=pulse,
-                )
-                self.leds.set_pattern("red", PatternKind.OFF)
-                self._sweet_trend_active = True
-            elif worsening:
-                self.leds.set_pattern("green", PatternKind.OFF)
-                self.leds.set_pattern(
-                    "red",
-                    PatternKind.PERIODIC_PULSE,
-                    period_ms=int(blink_interval_ms),
-                    pulse_ms=pulse,
-                )
-                self._sweet_trend_active = True
-            else:
-                self.leds.set_pattern("green", PatternKind.OFF)
-                self.leds.set_pattern("red", PatternKind.OFF)
-                self._sweet_trend_active = False
-        elif band == SweetBand.BORDERLINE:
-            # Keep alternating Y/R base; overlay uses the free channel when possible.
-            if improving:
-                self.leds.set_pattern("yellow", PatternKind.ON)
-                self.leds.set_pattern(
-                    "green",
-                    PatternKind.PERIODIC_PULSE,
-                    period_ms=int(blink_interval_ms),
-                    pulse_ms=pulse,
-                )
-                self.leds.set_pattern("red", PatternKind.OFF)
-                self._sweet_trend_active = True
-            elif worsening:
-                self.leds.set_pattern("yellow", PatternKind.ON)
-                self.leds.set_pattern("green", PatternKind.OFF)
-                self.leds.set_pattern(
-                    "red",
-                    PatternKind.PERIODIC_PULSE,
-                    period_ms=int(blink_interval_ms),
-                    pulse_ms=pulse,
-                )
-                self._sweet_trend_active = True
-            else:
-                self.leds.set_pattern("green", PatternKind.OFF)
-                self.leds.set_pattern("yellow", PatternKind.PHASE_A)
-                self.leds.set_pattern("red", PatternKind.PHASE_B)
-                self._sweet_trend_active = False
-        elif band == SweetBand.BAD:
-            self.leds.set_pattern("yellow", PatternKind.OFF)
-            self.leds.set_pattern("red", PatternKind.ON)
-            if improving:
-                self.leds.set_pattern(
-                    "green",
-                    PatternKind.PERIODIC_PULSE,
-                    period_ms=int(blink_interval_ms),
-                    pulse_ms=pulse,
-                )
-                self._sweet_trend_active = True
-            else:
-                self.leds.set_pattern("green", PatternKind.OFF)
-                self._sweet_trend_active = False
-        else:
-            self.leds.set_pattern("green", PatternKind.OFF)
-            self.leds.set_pattern("yellow", PatternKind.OFF)
-            self.leds.set_pattern("red", PatternKind.OFF)
-            self._sweet_trend_active = False
+                self.leds.set_pattern(name, kind)
+
+        _set("green", plan.green, plan.green_period_ms)
+        _set("yellow", plan.yellow, plan.yellow_period_ms)
+        _set("red", plan.red, plan.red_period_ms)
+        # True while meter is animating (cleared on READ / chord).
+        solid_green = (
+            plan.green == PatternKind.ON
+            and plan.yellow == PatternKind.OFF
+            and plan.red == PatternKind.OFF
+        )
+        self._sweet_trend_active = not solid_green and (
+            plan.green != PatternKind.OFF
+            or plan.yellow != PatternKind.OFF
+            or plan.red != PatternKind.OFF
+        )
         self._apply_wlan_led()
 
     # ------------------------------------------------------------------ buttons

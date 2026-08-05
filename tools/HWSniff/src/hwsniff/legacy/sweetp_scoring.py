@@ -162,6 +162,20 @@ class SweetPScorer:
         self._position_ok = False
         self._last_quality = 0.0
 
+    def recent_quality(self, window: int | None = None) -> float | None:
+        """Quality over the last N samples (default short_window_size).
+
+        Used by headless live LEDs so intermittent SearchTag misses move the
+        meter; a single always-successful probe always scores ~81 with UART
+        latency alone and is useless for positioning.
+        """
+        if not self._samples:
+            return None
+        n = max(1, int(window if window is not None else self.cfg.short_window_size))
+        samples = list(self._samples)[-n:]
+        quality, *_rest = quality_from_window(samples, self.cfg)
+        return quality
+
     def add_sample(self, sample: SweetPSample) -> SweetPLiveSnapshot:
         if sample.success:
             self.total_successes += 1

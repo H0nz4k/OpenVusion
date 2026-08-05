@@ -33,8 +33,8 @@ READ acceptance and band hysteresis always use **`stable_score`**.
 
 | Key | Default |
 |---|---|
-| `fast_alpha` | 0.60 |
-| `stable_alpha` | 0.20 |
+| `fast_alpha` | 0.75 |
+| `stable_alpha` | 0.25 |
 | `trend_window_samples` | 3 |
 | `trend_deadband_points_per_second` | 8.0 |
 | `trend_strong_points_per_second` | 40.0 |
@@ -49,15 +49,15 @@ Older configs without these keys keep the defaults above.
 
 ## LED meaning
 
-Base colour = **stable** band (bad=red, borderline=Y/R alternate, usable=yellow, good=green).
+Continuous meter from **`fast_score`** (READ still uses **`stable_score`**):
 
-Trend overlay from **fast** slope (points/second):
-
-- improving → green pulse (unless base already solid green)
-- worsening → red pulse (unless base already solid red)
-- deadband → no overlay
-
-Faster absolute trend → shorter pulse period (≈1000 ms → ≈200 ms).
+| Quality | LEDs |
+|---|---|
+| no tag / no score | red blinks fast |
+| weak | red blinks slower; yellow starts near the top of this band |
+| borderline | red slower + yellow |
+| usable | no red; yellow slower + green faster as score rises |
+| good (`>= green_min`) | solid green only |
 
 Restart chord (START+STOP) overrides SweetP LEDs.
 

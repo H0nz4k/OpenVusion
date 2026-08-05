@@ -447,29 +447,23 @@ class SweetPModeTests(unittest.TestCase, AppHelpers):
         app, gpio, clock = self._app(sweet=sweet)
         gpio.set_input(self.DIP1, False)
         app.tick()
+        # Continuous meter: assert pattern kinds (not instantaneous physical level).
         cases = [
-            (100, True, True, False, False),
-            (75, True, True, False, False),
-            (74, True, False, True, False),
-            (56, True, False, True, False),
-            (55, True, False, None, None),  # alternate
-            (39, True, False, False, True),
-            (None, False, False, False, False),
+            (100, True, PatternKind.ON, PatternKind.OFF, PatternKind.OFF),
+            (75, True, PatternKind.ON, PatternKind.OFF, PatternKind.OFF),
+            (74, True, PatternKind.PERIODIC_PULSE, PatternKind.PERIODIC_PULSE, PatternKind.OFF),
+            (56, True, PatternKind.PERIODIC_PULSE, PatternKind.PERIODIC_PULSE, PatternKind.OFF),
+            (55, True, PatternKind.OFF, PatternKind.PERIODIC_PULSE, PatternKind.PERIODIC_PULSE),
+            (39, True, PatternKind.OFF, PatternKind.PERIODIC_PULSE, PatternKind.PERIODIC_PULSE),
+            (10, True, PatternKind.OFF, PatternKind.OFF, PatternKind.PERIODIC_PULSE),
+            (None, False, PatternKind.OFF, PatternKind.OFF, PatternKind.PERIODIC_PULSE),
         ]
         for score, tag, g, y, r in cases:
             sweet.force(score, has_tag=tag)
             app.tick()
-            app.leds.tick(clock.t)
-            if y is None:
-                # borderline — yellow PHASE_A / red PHASE_B
-                self.assertEqual(
-                    app.leds.engine.get_kind("yellow"), PatternKind.PHASE_A
-                )
-                self.assertEqual(app.leds.engine.get_kind("red"), PatternKind.PHASE_B)
-            else:
-                self.assertEqual(app.leds.physical_on("green"), g)
-                self.assertEqual(app.leds.physical_on("yellow"), y)
-                self.assertEqual(app.leds.physical_on("red"), r)
+            self.assertEqual(app.leds.engine.get_kind("green"), g, msg=score)
+            self.assertEqual(app.leds.engine.get_kind("yellow"), y, msg=score)
+            self.assertEqual(app.leds.engine.get_kind("red"), r, msg=score)
 
     def test_leave_sweetp_to_ready(self):
         app, gpio, clock = self._app()
@@ -506,19 +500,18 @@ class PositioningTests(unittest.TestCase, AppHelpers):
         self._pulse(gpio, app, clock, self.START)
         sweet.force(75, has_tag=True)
         app.tick()
-        app.leds.tick(clock.t)
-        self.assertTrue(app.leds.physical_on("green"))
+        self.assertEqual(app.leds.engine.get_kind("green"), PatternKind.ON)
         sweet.force(60, has_tag=True)
         app.tick()
-        app.leds.tick(clock.t)
-        self.assertTrue(app.leds.physical_on("yellow"))
+        self.assertEqual(app.leds.engine.get_kind("yellow"), PatternKind.PERIODIC_PULSE)
+        self.assertEqual(app.leds.engine.get_kind("green"), PatternKind.PERIODIC_PULSE)
         sweet.force(50, has_tag=True)
         app.tick()
-        self.assertEqual(app.leds.engine.get_kind("yellow"), PatternKind.PHASE_A)
+        self.assertEqual(app.leds.engine.get_kind("yellow"), PatternKind.PERIODIC_PULSE)
+        self.assertEqual(app.leds.engine.get_kind("red"), PatternKind.PERIODIC_PULSE)
         sweet.force(30, has_tag=True)
         app.tick()
-        app.leds.tick(clock.t)
-        self.assertTrue(app.leds.physical_on("red"))
+        self.assertEqual(app.leds.engine.get_kind("red"), PatternKind.PERIODIC_PULSE)
 
 
 class ReadProgressTests(unittest.TestCase, AppHelpers):

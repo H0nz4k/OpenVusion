@@ -206,8 +206,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "auto_repeat_seconds": 0.5,
         "use_mock": False,
         # Dual-score UI filters (read-quality, not RF RSSI)
-        "fast_alpha": 0.60,
-        "stable_alpha": 0.20,
+        "fast_alpha": 0.75,
+        "stable_alpha": 0.25,
         "trend_window_samples": 3,
         "trend_deadband_points_per_second": 8.0,
         "trend_strong_points_per_second": 40.0,

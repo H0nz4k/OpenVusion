@@ -91,20 +91,32 @@ class FilterUnitTests(unittest.TestCase):
         self.assertEqual(ts.trend_direction, "improving")
         self.assertLess(ts.blink_interval_ms, tw.blink_interval_ms)
 
-    def test_isolated_none_no_strong_negative(self):
+    def test_isolated_none_holds_has_tag(self):
         f = SweetPDualFilter(
             SweetPFilterConfig(no_tag_confirm_samples=2, fast_alpha=1.0, stable_alpha=1.0)
         )
         f.update(70.0, has_tag=True, now=0.0)
         f.update(72.0, has_tag=True, now=0.5)
         miss = f.update(None, has_tag=False, now=1.0)
-        self.assertTrue(miss.fast_score is not None)  # not yet confirmed lost
-        self.assertNotEqual(miss.trend_direction, "worsening")
+        self.assertTrue(miss.has_tag)  # single miss must not flip to NONE
+        self.assertTrue(miss.fast_score is not None)
+        gone = f.update(None, has_tag=False, now=1.5)
+        self.assertFalse(gone.has_tag)
+        self.assertIsNone(gone.fast_score)
+
+    def test_soft_miss_updates_score(self):
+        f = SweetPDualFilter(
+            SweetPFilterConfig(no_tag_confirm_samples=3, fast_alpha=1.0, stable_alpha=1.0)
+        )
+        f.update(80.0, has_tag=True, now=0.0)
+        soft = f.update(40.0, has_tag=False, now=0.5)
+        self.assertTrue(soft.has_tag)
+        self.assertAlmostEqual(soft.fast_score, 40.0)
 
     def test_legacy_config_defaults(self):
         cfg = filter_config_from_sweet({})
-        self.assertAlmostEqual(cfg.fast_alpha, 0.60)
-        self.assertAlmostEqual(cfg.stable_alpha, 0.20)
+        self.assertAlmostEqual(cfg.fast_alpha, 0.75)
+        self.assertAlmostEqual(cfg.stable_alpha, 0.25)
         self.assertIn("fast_alpha", DEFAULT_CONFIG["sweetp"])
 
 
@@ -206,62 +218,58 @@ class AppTrendTests(unittest.TestCase):
                 app._sweetp_snapshot.score_at_accept,
             )
 
-    def test_improving_green_overlay_on_yellow(self):
+    def test_usable_meter_yellow_and_green_blink(self):
         with tempfile.TemporaryDirectory() as tmp:
             app, gpio, clock, sweet, _coll = self._app(tmp)
             self._pulse(gpio, app, clock, self.START)
-            for v in (58.0, 60.0, 62.0, 64.0):
+            for v in (60.0, 62.0, 64.0, 65.0):
                 sweet.push_raw(v, has_tag=True, advance=0.35)
                 app.tick()
-            self.assertIn(
-                app.runtime.sweet_band, (SweetBand.USABLE, SweetBand.GOOD)
-            )
-            # Force usable base + strong improve
-            while app.runtime.sweet_band != SweetBand.USABLE:
-                sweet.push_raw(60.0, has_tag=True, advance=0.35)
-                app.tick()
-                if clock.t > 20:
-                    break
-            sweet.push_raw(90.0, has_tag=True, advance=0.5)
-            app.tick()
-            self.assertEqual(app.leds.engine.get_kind("yellow"), PatternKind.ON)
             self.assertEqual(
                 app.leds.engine.get_kind("green"), PatternKind.PERIODIC_PULSE
             )
-            ch = app.leds.engine._channels["green"]
-            self.assertIsNotNone(ch.period_ms)
-            self.assertLessEqual(ch.period_ms, 1000)
+            self.assertEqual(
+                app.leds.engine.get_kind("yellow"), PatternKind.PERIODIC_PULSE
+            )
+            self.assertEqual(app.leds.engine.get_kind("red"), PatternKind.OFF)
 
-    def test_worsening_red_overlay_on_yellow(self):
+    def test_weak_meter_red_blink(self):
         with tempfile.TemporaryDirectory() as tmp:
             app, gpio, clock, sweet, _coll = self._app(tmp)
             self._pulse(gpio, app, clock, self.START)
-            for v in (70.0, 68.0, 66.0, 64.0):
+            for v in (20.0, 18.0, 15.0):
                 sweet.push_raw(v, has_tag=True, advance=0.35)
                 app.tick()
-            while app.runtime.sweet_band not in (SweetBand.USABLE, SweetBand.GOOD):
-                sweet.push_raw(65.0, has_tag=True, advance=0.35)
-                app.tick()
-                if clock.t > 20:
-                    break
-            # Drop sharply while keeping yellow-ish stable if possible
-            sweet.push_raw(40.0, has_tag=True, advance=0.5)
-            app.tick()
             self.assertEqual(
                 app.leds.engine.get_kind("red"), PatternKind.PERIODIC_PULSE
             )
+            self.assertEqual(app.leds.engine.get_kind("green"), PatternKind.OFF)
 
-    def test_collision_bad_worsening_stays_solid_red(self):
+    def test_good_meter_solid_green(self):
         with tempfile.TemporaryDirectory() as tmp:
             app, gpio, clock, sweet, _coll = self._app(tmp)
             self._pulse(gpio, app, clock, self.START)
-            sweet.push_raw(20.0, has_tag=True, advance=0.0)
+            for v in (80.0, 85.0, 90.0, 92.0):
+                sweet.push_raw(v, has_tag=True, advance=0.35)
+                app.tick()
+            self.assertEqual(app.leds.engine.get_kind("green"), PatternKind.ON)
+            self.assertEqual(app.leds.engine.get_kind("yellow"), PatternKind.OFF)
+            self.assertEqual(app.leds.engine.get_kind("red"), PatternKind.OFF)
+
+    def test_no_tag_fast_red(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app, gpio, clock, sweet, _coll = self._app(tmp)
+            self._pulse(gpio, app, clock, self.START)
+            sweet.push_raw(80.0, has_tag=True, advance=0.0)
             app.tick()
-            sweet.push_raw(5.0, has_tag=True, advance=0.5)
-            app.tick()
-            self.assertEqual(app.runtime.sweet_band, SweetBand.BAD)
-            self.assertEqual(app.leds.engine.get_kind("red"), PatternKind.ON)
-            self.assertEqual(app.leds.engine.get_kind("green"), PatternKind.OFF)
+            for _ in range(3):
+                sweet.push_raw(None, has_tag=False, advance=0.4)
+                app.tick()
+            self.assertEqual(
+                app.leds.engine.get_kind("red"), PatternKind.PERIODIC_PULSE
+            )
+            ch = app.leds.engine._channels["red"]
+            self.assertLessEqual(ch.period_ms or 999, 220)
 
     def test_cycle_reset_clears_trace(self):
         stats = SweetPCycleStats()

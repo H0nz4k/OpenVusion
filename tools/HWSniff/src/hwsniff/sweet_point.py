@@ -162,7 +162,7 @@ class MockSweetPoint:
             if callable(adv):
                 adv(advance)
         now = self._clock()
-        tick = self._filter.update(raw if has_tag else None, has_tag=has_tag, now=now)
+        tick = self._filter.update(raw, has_tag=has_tag, now=now)
         band = band_from_score(
             tick.stable_score,
             has_tag=tick.has_tag,

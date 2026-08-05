@@ -11,7 +11,6 @@ from .legacy.sweetp_scoring import (
     ScoringConfig,
     SweetPSample,
     SweetPScorer,
-    single_sample_quality,
 )
 from .legacy.sweetp_service import _parse_sweetp_config
 from .state import SweetBand
@@ -67,6 +66,8 @@ class LiveSweetPoint:
         self._reader_error = None
         self._first_valid_logged = False
         self._band = SweetBand.NONE
+        with self._lock:
+            self._sample = SweetSample(None, SweetBand.NONE, False)
         self._thread = threading.Thread(
             target=self._run, name="hwsniff-sweetp", daemon=True
         )
@@ -152,9 +153,11 @@ class LiveSweetPoint:
                         monotonic_ts=started,
                     )
                     scorer.add_sample(probe)
-                    raw = single_sample_quality(probe, scoring)
-                    has_tag = bool(ok and uid)
-                    tick = dual.update(raw, has_tag=has_tag, now=started)
+                    probe_hit = bool(ok and uid)
+                    # Short-window reliability so intermittent misses move the meter.
+                    # Single-probe latency alone always scores ~81 on this UART.
+                    raw = scorer.recent_quality()
+                    tick = dual.update(raw, has_tag=probe_hit, now=started)
                     band = band_from_score(
                         tick.stable_score,
                         has_tag=tick.has_tag,
