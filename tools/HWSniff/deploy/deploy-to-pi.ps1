@@ -166,6 +166,18 @@ try {
     $null = robocopy $HwsniffRoot $stage /E /XD .venv __pycache__ .git deploy\dist captures /XF *.pyc /NFL /NDL /NJH /NJS /nc /ns /np
     if ($LASTEXITCODE -ge 8) { throw "robocopy failed (exit $LASTEXITCODE)" }
 
+    # Quick used to skip ElaTool → CollectorConfig lagged behind HWSniff.
+    $elaSrc = Join-Path $RepoRoot "tools\ElaTool"
+    $elaDst = Join-Path $stage "_vendor\ElaTool"
+    if (Test-Path (Join-Path $elaSrc "src\elatec_uid_tool")) {
+        Write-Host "==> Staging ElaTool vendor..."
+        New-Item -ItemType Directory -Path $elaDst -Force | Out-Null
+        $null = robocopy $elaSrc $elaDst /E /XD .venv __pycache__ .git captures dist build *.egg-info /XF *.pyc /NFL /NDL /NJH /NJS /nc /ns /np
+        if ($LASTEXITCODE -ge 8) { throw "robocopy ElaTool failed (exit $LASTEXITCODE)" }
+    } else {
+        Write-Warning "ElaTool source missing at $elaSrc — Pi vendor will not be updated"
+    }
+
     $helperSrc = Join-Path $DeployDir "remote-quick-update.sh"
     $helperDst = Join-Path $stage "remote-quick-update.sh"
     $text = [System.IO.File]::ReadAllText($helperSrc) -replace "`r`n", "`n"

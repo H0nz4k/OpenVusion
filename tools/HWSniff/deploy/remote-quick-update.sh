@@ -17,7 +17,7 @@ SERVICE_USER="${SERVICE_USER:-hwsniff}"
 }
 
 echo "==> Quick update → $INSTALL_ROOT"
-# Never delete _vendor (ElaTool from Full install) or .venv
+# Never wipe .venv. Sync HWSniff tree; update ElaTool vendor separately when present.
 rsync -a --delete \
   --exclude '.venv' \
   --exclude '_vendor' \
@@ -26,6 +26,18 @@ rsync -a --delete \
   --exclude 'captures' \
   --exclude 'deploy/dist' \
   "$SRC/" "$INSTALL_ROOT/"
+
+if [[ -d "$SRC/_vendor/ElaTool/src/elatec_uid_tool" ]]; then
+  echo "==> Sync ElaTool → $INSTALL_ROOT/_vendor/ElaTool"
+  mkdir -p "$INSTALL_ROOT/_vendor"
+  rsync -a --delete \
+    --exclude '__pycache__' \
+    --exclude '*.pyc' \
+    --exclude '.git' \
+    --exclude 'captures' \
+    --exclude '*.egg-info' \
+    "$SRC/_vendor/ElaTool/" "$INSTALL_ROOT/_vendor/ElaTool/"
+fi
 
 # Ensure packages are importable (editable installs from Full install)
 if [[ -x "$INSTALL_ROOT/.venv/bin/pip" ]]; then

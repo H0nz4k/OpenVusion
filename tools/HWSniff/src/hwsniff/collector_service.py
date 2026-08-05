@@ -285,6 +285,8 @@ class CaptureCollector:
         del now  # worker-driven
 
     def _run(self, port: str) -> None:
+        import dataclasses
+
         from elatec_uid_tool.field_collector import (
             CapturePhase,
             CollectorConfig,
@@ -295,69 +297,81 @@ class CaptureCollector:
         coll_cfg = self.config.get("collector") or {}
         reader_cfg = self.config.get("reader") or {}
         try:
-            collector_config = CollectorConfig(
-                capture_root=self.config["capture_root"],
-                data_root=self.config.get("data_root"),
-                application_samples=int(coll_cfg.get("application_samples", 3)),
-                full_dump_samples=int(coll_cfg.get("full_dump_samples", 1)),
-                session_duration_seconds=float(
+            cfg_kwargs: dict[str, Any] = {
+                "capture_root": self.config["capture_root"],
+                "data_root": self.config.get("data_root"),
+                "application_samples": int(coll_cfg.get("application_samples", 3)),
+                "full_dump_samples": int(coll_cfg.get("full_dump_samples", 1)),
+                "session_duration_seconds": float(
                     coll_cfg.get(
                         "session_duration_seconds",
                         reader_cfg.get("session_seconds", 2.0),
                     )
                 ),
-                session_interval_ms=float(
+                "session_interval_ms": float(
                     coll_cfg.get(
                         "session_interval_ms",
                         reader_cfg.get("session_interval_ms", 50),
                     )
                 ),
-                allow_duplicate=bool(coll_cfg.get("allow_duplicate", True)),
-                wait_for_removal=False,
-                handshake_timeout_seconds=float(
+                "allow_duplicate": bool(coll_cfg.get("allow_duplicate", True)),
+                "wait_for_removal": False,
+                "handshake_timeout_seconds": float(
                     reader_cfg.get("handshake_timeout_seconds", 2)
                 ),
-                include_session=bool(coll_cfg.get("include_session", True)),
-                include_full_dump=bool(coll_cfg.get("include_full_dump", True)),
-                export_bundle_root=coll_cfg.get(
+                "include_session": bool(coll_cfg.get("include_session", True)),
+                "include_full_dump": bool(coll_cfg.get("include_full_dump", True)),
+                "export_bundle_root": coll_cfg.get(
                     "export_bundle_root", "/var/lib/hwsniff/export"
                 ),
-                export_bundle_mirror_root=coll_cfg.get(
+                "export_bundle_mirror_root": coll_cfg.get(
                     "export_bundle_mirror_root"
                 ),
-                include_logs_in_bundle=bool(
+                "include_logs_in_bundle": bool(
                     coll_cfg.get("include_logs_in_bundle", False)
                 ),
-                log_root=self.config.get("log_root"),
-                phase_retry_count=int(
+                "log_root": self.config.get("log_root"),
+                "phase_retry_count": int(
                     coll_cfg.get(
                         "phase_retry_count", reader_cfg.get("retry_count", 3)
                     )
                 ),
-                phase_retry_delay_ms=float(
+                "phase_retry_delay_ms": float(
                     coll_cfg.get(
                         "phase_retry_delay_ms",
                         reader_cfg.get("retry_delay_ms", 150),
                     )
                 ),
-                tag_acquire_timeout_seconds=float(
+                "tag_acquire_timeout_seconds": float(
                     coll_cfg.get("tag_acquire_timeout_seconds", 30)
                 ),
-                capture_timeout_seconds=float(
+                "capture_timeout_seconds": float(
                     coll_cfg.get("capture_timeout_seconds", 180)
                 ),
-                raw_trace=bool(
+                "raw_trace": bool(
                     coll_cfg.get("raw_trace", reader_cfg.get("raw_trace", True))
                 ),
-                confirm_reads=int(
+                "confirm_reads": int(
                     coll_cfg.get(
                         "confirm_reads", reader_cfg.get("confirm_reads", 3)
                     )
                 ),
-                label="hwsniff-v2",
-                state="field",
-                summary_extra=self._summary_extra,
-                artifact_files=self._artifact_files,
+                "label": "hwsniff-v2",
+                "state": "field",
+                "summary_extra": self._summary_extra,
+                "artifact_files": self._artifact_files,
+            }
+            # Editable install on Pi may lag behind HWSniff; only pass known fields.
+            known = {f.name for f in dataclasses.fields(CollectorConfig)}
+            missing = sorted(k for k in ("summary_extra", "artifact_files") if k not in known)
+            if missing:
+                log.warning(
+                    "CollectorConfig missing %s — reinstall elatec_uid_tool "
+                    "from /opt/Sniff/_vendor/ElaTool (SweetP summary/trace skipped)",
+                    ",".join(missing),
+                )
+            collector_config = CollectorConfig(
+                **{k: v for k, v in cfg_kwargs.items() if k in known}
             )
             collector = FieldCollector(
                 collector_config,

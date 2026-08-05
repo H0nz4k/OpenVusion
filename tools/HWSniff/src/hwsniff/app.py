@@ -215,6 +215,7 @@ class HeadlessApp:
         )
         self._sweetp_snapshot = None
         self._sweet_trend_active = False
+        self._last_sweet_seq: int | None = None
         self._chord_warning_active = False
         self._chord_led_backup: dict[str, PatternKind] | None = None
         self._restart_exit_code: int | None = None
@@ -665,22 +666,25 @@ class HeadlessApp:
         self.runtime.sweet_has_tag = sample.has_tag
         if self.runtime.device_state == DeviceState.POSITIONING:
             self.runtime.positioning_score = sample.score
-            self._sweetp_stats.add_sample(
-                sample.score,
-                has_tag=sample.has_tag,
-                trace_row={
-                    "seq": sample.seq,
-                    "t_ms": sample.t_ms,
-                    "raw_score": sample.raw_score,
-                    "fast_score": sample.fast_score,
-                    "stable_score": sample.score,
-                    "trend": sample.trend_pps,
-                    "band": sample.band.value,
-                    "tag_present": sample.has_tag,
-                    "reader_latency_ms": sample.reader_latency_ms,
-                    "accepted": False,
-                },
-            )
+            # Only record when the SweetP worker publishes a new probe (not every 20 ms tick).
+            if sample.seq and sample.seq != self._last_sweet_seq:
+                self._last_sweet_seq = sample.seq
+                self._sweetp_stats.add_sample(
+                    sample.score,
+                    has_tag=sample.has_tag,
+                    trace_row={
+                        "seq": sample.seq,
+                        "t_ms": sample.t_ms,
+                        "raw_score": sample.raw_score,
+                        "fast_score": sample.fast_score,
+                        "stable_score": sample.score,
+                        "trend": sample.trend_pps,
+                        "band": sample.band.value,
+                        "tag_present": sample.has_tag,
+                        "reader_latency_ms": sample.reader_latency_ms,
+                        "accepted": False,
+                    },
+                )
         if sample.band != prev_band:
             log.info(
                 "SweetP band %s → %s stable=%.1f fast=%s",
@@ -937,6 +941,7 @@ class HeadlessApp:
             cfg = live_cfg
         self._sweetp_stats.reset(filter_config=cfg)
         self._sweetp_snapshot = None
+        self._last_sweet_seq = None
         self._clear_sweet_trend()
 
     def _try_begin_read(self) -> None:
