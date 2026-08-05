@@ -38,6 +38,18 @@ This remains the known-good reference path for HWSniff/PCSniff/ElaTool.
 
 A destructive teardown of the known-good tag was performed after a successful full capture.
 
+### Confirmed external identification
+
+Rear-label markings photographed on the reference unit include:
+
+```text
+VUSION 2.6 BWR GU140
+SES-imagotag
+hardware revision: R2.0
+```
+
+The exact model/SN/FCC text on the worn rear sticker should be treated as image evidence; only clearly readable fields should be copied into machine-readable metadata.
+
 ### Confirmed PCB markings
 
 The PCB is marked:
@@ -120,24 +132,77 @@ battery removed
 
 Future reset verification should use RF behavior, current consumption or another active signal rather than display persistence.
 
-### NFC structure visible on PCB
+### NFC structure and probable NFC IC
 
 A large printed loop/coil structure is visible on the reverse side of the PCB and is consistent with the physical presence of an NFC antenna structure.
 
-This matches the already verified NTAG I²C Plus 1K capture path.
+The antenna traces appear to route toward a small IC on the upper-left portion of the PCB. The top marking on that device was read as:
 
-### Additional ICs and test points
+```text
+S21
+```
 
-The PCB contains:
+Because the same physical tag was already positively identified through HWSniff as NTAG I²C Plus 1K, this `S21` device is now the strongest hardware candidate for the NFC/NTAG front-end.
 
-- a small 8-pin IC adjacent to the CC2510;
-- several accessible test pads;
-- a crystal close to the CC2510;
-- RF matching/passive components;
-- e-paper flex connector;
-- multiple battery contacts.
+Current confidence:
 
-The 8-pin IC is not yet positively identified. Because the tag is already known to contain NTAG I²C Plus functionality, it is an interesting candidate for further identification, but this must not be recorded as confirmed without readable package marking or electrical tracing.
+```text
+S21 device = probable NFC / NTAG I2C Plus device
+status = strong hardware inference, not yet exact part-number confirmation
+```
+
+Do not record an exact NXP part number until package marking or electrical pin tracing confirms it.
+
+A second small 8-pin IC adjacent to the CC2510 has observed top marking approximately:
+
+```text
+1H106
+0G459V   (or OG459V)
+```
+
+This second IC is **not currently considered the primary NFC candidate** because the visible NFC antenna routing appears to go toward the `S21` device instead.
+
+### Test/debug pads
+
+A row of five exposed pads is present at the lower edge of the PCB. Their number and placement are consistent with the minimum CC2510 debug/programming interface.
+
+Working signal set:
+
+```text
+VDD
+GND
+RESET_N
+P2_1 / Debug Data (DD)
+P2_2 / Debug Clock (DC)
+```
+
+The physical order of the five pads is **not yet confirmed**.
+
+The reverse side of the PCB exposes the traces more clearly and should be used for continuity mapping from the pads to the CC2510 pins and power rails.
+
+Do not apply external voltage to unknown pads before mapping them.
+
+### Planned CC2510 debugger workflow
+
+A low-cost CC Debugger-compatible clone has been ordered for the VUSION/CC2510 reference tag.
+
+The first connection must be deliberately read-only and conservative.
+
+Planned sequence:
+
+```text
+1. continuity-map GND / VDD / RESET_N / DD / DC
+2. verify target voltage
+3. connect CC Debugger-compatible interface
+4. read CHIP_ID
+5. read debug/status information
+6. determine whether debug access is locked
+7. only if safe and accessible: investigate read-only memory/flash extraction
+```
+
+No erase/program operation should be performed during initial identification.
+
+Important: the TI debug protocol exposes destructive operations such as chip erase. The initial goal is identification and preservation of the original firmware/state.
 
 ### RF investigation consequence
 
@@ -161,13 +226,18 @@ No transmission is required for this phase; passive capture is sufficient.
 ### New confirmed profile for this family
 
 ```text
-Vendor / family: imagotag / SES-imagotag family
+Vendor / family: SES-imagotag / VUSION
+Product marking: VUSION 2.6 BWR GU140
+HW revision observed: R2.0
 PCB marking: RFRTx024E
 Main MCU/RF: TI CC2510F32
 RF band: 2.4 GHz proprietary radio
 NFC: NTAG I2C Plus 1K (physically verified by capture)
+Probable NFC IC marking: S21
 Display: e-paper, image persists without battery power
 Front optics: likely indicator LEDs; exact type not yet electrically verified
+Debug access: 5-pad interface, exact pad order pending continuity mapping
+Debugger status: low-cost CC Debugger-compatible unit ordered, not yet tested
 ```
 
 This family should now be treated as a dual-interface target:
@@ -176,6 +246,8 @@ This family should now be treated as a dual-interface target:
 NFC reconnaissance / memory capture
 +
 proprietary 2.4 GHz RF reconnaissance
++
+optional direct CC2510 debug/firmware reconnaissance
 ```
 
 ## Field finding: SOLUM ESL in Albert
@@ -211,7 +283,7 @@ Tag type: 0x85
 ID length: 64 bit
 ```
 
-### Confirmed observations
+### Confirmed NFC-side observations
 
 - TWN4 detects the tag.
 - An 8-byte / 64-bit identifier is returned.
@@ -239,6 +311,39 @@ Evidence supporting the hypothesis:
 **Strong hypothesis, not yet protocol-confirmed.**
 
 Do not hard-code `tag_type 0x85 == FeliCa` until the ELATEC tag-type mapping or a successful FeliCa-native probe confirms it.
+
+## SOLUM 2.4 GHz RF finding
+
+The SOLUM rear label identifies the radio-certified family as `EL026F3WRA`. FCC material for this radio family indicates a proprietary 2.4 GHz GFSK system rather than a simple assumption of IEEE 802.15.4.
+
+Current RF working profile:
+
+```text
+Band: approximately 2401–2480 MHz
+Channelization: 80 channels
+Spacing: approximately 1 MHz
+Modulation: GFSK
+Protocol: proprietary / not yet decoded
+```
+
+This corrects the earlier broad assumption that the SOLUM target should automatically be treated as an IEEE 802.15.4 device.
+
+### Consequence for XIAO nRF52840 experiments
+
+A Seeed XIAO nRF52840 is available for experimentation.
+
+It should not be treated as a guaranteed packet decoder for this SOLUM protocol. The initial useful role is instead an experimental RF activity scanner/logger:
+
+```text
+scan 2401..2480 MHz
+→ record channel/frequency activity
+→ record RSSI/activity timing where technically possible
+→ identify repeatedly active channels
+→ infer hopping/periodicity
+→ only later attempt packet/framing recovery
+```
+
+A stationary logger deployment should only be used with permission of the premises/operator.
 
 ## Important architectural consequence
 
@@ -338,6 +443,8 @@ For teardown work, additionally record:
 - power architecture
 - LEDs/sensors
 - debug/test pads
+- debugger/programmer used
+- lock/debug status
 - high-resolution photos of both PCB sides
 
 This document should be updated as new field captures and hardware findings are obtained.
