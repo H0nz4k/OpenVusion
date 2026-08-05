@@ -21,6 +21,7 @@ class PatternKind(str, Enum):
     PHASE_A = "phase_a"  # first half of border period
     PHASE_B = "phase_b"  # second half of border period
     COUNT_BLINK = "count_blink"  # N full ON/OFF cycles then complete
+    PERIODIC_PULSE = "periodic_pulse"  # short ON pulse every period_ms
 
 
 @dataclass
@@ -31,6 +32,8 @@ class _Channel:
     on_complete: Callable[[], None] | None = None
     count: int | None = None
     step_ms: int | None = None
+    period_ms: int | None = None
+    pulse_ms: int | None = None
 
 
 @dataclass
@@ -64,6 +67,8 @@ class PatternEngine:
         on_complete: Callable[[], None] | None = None,
         count: int | None = None,
         step_ms: int | None = None,
+        period_ms: int | None = None,
+        pulse_ms: int | None = None,
     ) -> None:
         k = PatternKind(kind) if not isinstance(kind, PatternKind) else kind
         self._channels[name] = _Channel(
@@ -73,6 +78,8 @@ class PatternEngine:
             on_complete=on_complete,
             count=count,
             step_ms=step_ms,
+            period_ms=period_ms,
+            pulse_ms=pulse_ms,
         )
 
     def clear(self, name: str) -> None:
@@ -164,4 +171,9 @@ class PatternEngine:
                 return False, True
             phase = int(elapsed_ms // step) % 2
             return phase == 0, False
+        if ch.kind == PatternKind.PERIODIC_PULSE:
+            period = max(1, int(ch.period_ms) if ch.period_ms is not None else t.fast_ms * 2)
+            pulse = max(1, int(ch.pulse_ms) if ch.pulse_ms is not None else max(1, period // 4))
+            pulse = min(pulse, period - 1) if period > 1 else 1
+            return (elapsed_ms % period) < pulse, False
         return False, False

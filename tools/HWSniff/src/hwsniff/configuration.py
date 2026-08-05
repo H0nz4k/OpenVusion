@@ -194,7 +194,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "weight_uid_consistency": 0.15,
         "use_latency": True,
         "ui_update_ms": 150,
-        "require_get_version": True,
+        # Live SweetP: SearchTag alone (~450–500 ms). Extra RF commands double latency.
+        "require_get_version": False,
         "require_page_00": False,
         "require_application_block": False,
         "probe_attempts": 10,
@@ -204,6 +205,17 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "require_stable_uid": True,
         "auto_repeat_seconds": 0.5,
         "use_mock": False,
+        # Dual-score UI filters (read-quality, not RF RSSI)
+        "fast_alpha": 0.60,
+        "stable_alpha": 0.20,
+        "trend_window_samples": 3,
+        "trend_deadband_points_per_second": 8.0,
+        "trend_strong_points_per_second": 40.0,
+        "trend_min_blink_interval_ms": 200,
+        "trend_max_blink_interval_ms": 1000,
+        "trend_pulse_ms": 80,
+        "no_tag_confirm_samples": 2,
+        "max_trace_samples": 2000,
     },
 }
 

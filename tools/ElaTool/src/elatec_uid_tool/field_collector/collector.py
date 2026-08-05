@@ -207,8 +207,12 @@ class FieldCollector:
         )
         result = probe.run()
 
-        if self.config.summary_extra and result.output_dir:
-            self._merge_summary_extra(Path(result.output_dir), self.config.summary_extra)
+        if result.output_dir:
+            out = Path(result.output_dir)
+            if self.config.artifact_files:
+                self._write_artifact_files(out, self.config.artifact_files)
+            if self.config.summary_extra:
+                self._merge_summary_extra(out, self.config.summary_extra)
 
         export_tar: str | None = None
         if (
@@ -330,6 +334,17 @@ class FieldCollector:
             )
         except OSError:
             pass
+
+    @staticmethod
+    def _write_artifact_files(output_dir: Path, files: dict[str, str]) -> None:
+        for name, content in files.items():
+            base = Path(name).name
+            if not base or base in {".", ".."}:
+                continue
+            try:
+                (output_dir / base).write_text(content, encoding="utf-8")
+            except OSError:
+                pass
 
     def _wait_for_removal_client(self, client: Any) -> None:
         """Return when the tag is gone. Require two consecutive misses."""

@@ -74,6 +74,14 @@ def latency_score(latency_ms: float, good_ms: float, bad_ms: float) -> float:
     return 1.0 - (latency_ms - good_ms) / (bad_ms - good_ms)
 
 
+def single_sample_quality(sample: SweetPSample, cfg: ScoringConfig) -> float | None:
+    """Instant read-quality for one probe (not RF RSSI). None if unsuccessful."""
+    if not sample.success or not sample.uid:
+        return None
+    quality, *_rest = quality_from_window([sample], cfg)
+    return quality
+
+
 def quality_from_window(
     samples: list[SweetPSample],
     cfg: ScoringConfig,

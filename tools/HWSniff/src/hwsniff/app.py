@@ -34,6 +34,7 @@ from .state import (
     WlanStatus,
 )
 from .sweetp_bands import score_allows_read, thresholds_from_config
+from .sweetp_filter import filter_config_from_sweet
 from .sweetp_live import create_sweet_point
 from .sweetp_stats import SweetPCycleStats
 from .upload import UploadService, load_upload_settings
@@ -98,7 +99,9 @@ class HeadlessApp:
             prefer_mock=prefer_mock, runtime_config=self.config
         )
         self.runtime = RuntimeState()
-        self._thresholds = thresholds_from_config(self.config.get("sweetp") or {})
+        sweet_cfg = self.config.get("sweetp") or {}
+        self._thresholds = thresholds_from_config(sweet_cfg)
+        self._filter_cfg = filter_config_from_sweet(sweet_cfg)
 
         timings = PatternTimings(
             slow_ms=int(pat_cfg.get("slow_ms", timing.get("error2_ms", 500))),
@@ -207,8 +210,11 @@ class HeadlessApp:
         self._reader_lost_during_capture = False
         self._uart_owner: str | None = None  # "sweetp" | "collector"
         self._uart_release_at: float | None = None
-        self._sweetp_stats = SweetPCycleStats()
+        self._sweetp_stats = SweetPCycleStats(
+            max_trace_samples=self._filter_cfg.max_trace_samples
+        )
         self._sweetp_snapshot = None
+        self._sweet_trend_active = False
         self._chord_warning_active = False
         self._chord_led_backup: dict[str, PatternKind] | None = None
         self._restart_exit_code: int | None = None
@@ -556,8 +562,7 @@ class HeadlessApp:
         self.runtime.active_cycle_mode = None
         self.runtime.collector_running = False
         self.runtime.read_step = 0
-        self._sweetp_stats.reset()
-        self._sweetp_snapshot = None
+        self._reset_sweetp_cycle()
 
     # ------------------------------------------------------------------ UART ownership
 
@@ -654,25 +659,49 @@ class HeadlessApp:
     def _tick_sweet(self, now: float) -> None:
         sample = self.sweet_point.tick(now)
         prev_band = self.runtime.sweet_band
+        # stable score drives band + READ; fast is overlay-only
         self.runtime.sweet_score = sample.score
         self.runtime.sweet_band = sample.band
         self.runtime.sweet_has_tag = sample.has_tag
         if self.runtime.device_state == DeviceState.POSITIONING:
             self.runtime.positioning_score = sample.score
-            self._sweetp_stats.add_sample(sample.score, has_tag=sample.has_tag)
+            self._sweetp_stats.add_sample(
+                sample.score,
+                has_tag=sample.has_tag,
+                trace_row={
+                    "seq": sample.seq,
+                    "t_ms": sample.t_ms,
+                    "raw_score": sample.raw_score,
+                    "fast_score": sample.fast_score,
+                    "stable_score": sample.score,
+                    "trend": sample.trend_pps,
+                    "band": sample.band.value,
+                    "tag_present": sample.has_tag,
+                    "reader_latency_ms": sample.reader_latency_ms,
+                    "accepted": False,
+                },
+            )
         if sample.band != prev_band:
             log.info(
-                "SweetP band %s → %s score=%s",
+                "SweetP band %s → %s stable=%.1f fast=%s",
                 prev_band.value,
                 sample.band.value,
-                sample.score,
+                sample.score if sample.score is not None else -1.0,
+                f"{sample.fast_score:.1f}" if sample.fast_score is not None else "n/a",
             )
         if not self._chord_warning_active:
-            self._apply_sweet_leds(sample.band)
+            self._apply_sweet_leds(
+                sample.band,
+                trend_direction=sample.trend_direction,
+                blink_interval_ms=sample.blink_interval_ms,
+            )
 
     def _sweet_reader_failed(self) -> bool:
         err = getattr(self.sweet_point, "reader_error", None)
         return bool(err)
+
+    def _clear_sweet_trend(self) -> None:
+        self._sweet_trend_active = False
 
     def _poll_reader_hotplug(self, now: float) -> bool:
         """Monitor TWN4 presence. Return True if transitioned to ERROR2.
@@ -706,7 +735,7 @@ class HeadlessApp:
             self.runtime.sweet_band = SweetBand.NONE
             self.runtime.sweet_score = None
             self.runtime.sweet_has_tag = False
-            self._sweetp_stats.reset()
+            self._reset_sweetp_cycle()
             self._enter(DeviceState.ERROR2)
             return
         if st == DeviceState.READY:
@@ -723,27 +752,107 @@ class HeadlessApp:
                 self._enter(DeviceState.ERROR2)
             return
 
-    def _apply_sweet_leds(self, band: SweetBand) -> None:
+    def _apply_sweet_leds(
+        self,
+        band: SweetBand,
+        *,
+        trend_direction: str = "stable",
+        blink_interval_ms: int | None = None,
+    ) -> None:
+        """Base band from stable_score + optional trend overlay from fast_score."""
+        pulse = int(self._filter_cfg.trend_pulse_ms)
+        improving = trend_direction == "improving" and blink_interval_ms is not None
+        worsening = trend_direction == "worsening" and blink_interval_ms is not None
+        # Collision: same-color overlay is invisible — keep solid base.
+        if band == SweetBand.GOOD and improving:
+            improving = False
+        if band == SweetBand.BAD and worsening:
+            worsening = False
+
         if band == SweetBand.GOOD:
             self.leds.set_pattern("green", PatternKind.ON)
             self.leds.set_pattern("yellow", PatternKind.OFF)
-            self.leds.set_pattern("red", PatternKind.OFF)
+            if worsening:
+                self.leds.set_pattern(
+                    "red",
+                    PatternKind.PERIODIC_PULSE,
+                    period_ms=int(blink_interval_ms),
+                    pulse_ms=pulse,
+                )
+                self._sweet_trend_active = True
+            else:
+                self.leds.set_pattern("red", PatternKind.OFF)
+                self._sweet_trend_active = False
         elif band == SweetBand.USABLE:
-            self.leds.set_pattern("green", PatternKind.OFF)
             self.leds.set_pattern("yellow", PatternKind.ON)
-            self.leds.set_pattern("red", PatternKind.OFF)
+            if improving:
+                self.leds.set_pattern(
+                    "green",
+                    PatternKind.PERIODIC_PULSE,
+                    period_ms=int(blink_interval_ms),
+                    pulse_ms=pulse,
+                )
+                self.leds.set_pattern("red", PatternKind.OFF)
+                self._sweet_trend_active = True
+            elif worsening:
+                self.leds.set_pattern("green", PatternKind.OFF)
+                self.leds.set_pattern(
+                    "red",
+                    PatternKind.PERIODIC_PULSE,
+                    period_ms=int(blink_interval_ms),
+                    pulse_ms=pulse,
+                )
+                self._sweet_trend_active = True
+            else:
+                self.leds.set_pattern("green", PatternKind.OFF)
+                self.leds.set_pattern("red", PatternKind.OFF)
+                self._sweet_trend_active = False
         elif band == SweetBand.BORDERLINE:
-            self.leds.set_pattern("green", PatternKind.OFF)
-            self.leds.set_pattern("yellow", PatternKind.PHASE_A)
-            self.leds.set_pattern("red", PatternKind.PHASE_B)
+            # Keep alternating Y/R base; overlay uses the free channel when possible.
+            if improving:
+                self.leds.set_pattern("yellow", PatternKind.ON)
+                self.leds.set_pattern(
+                    "green",
+                    PatternKind.PERIODIC_PULSE,
+                    period_ms=int(blink_interval_ms),
+                    pulse_ms=pulse,
+                )
+                self.leds.set_pattern("red", PatternKind.OFF)
+                self._sweet_trend_active = True
+            elif worsening:
+                self.leds.set_pattern("yellow", PatternKind.ON)
+                self.leds.set_pattern("green", PatternKind.OFF)
+                self.leds.set_pattern(
+                    "red",
+                    PatternKind.PERIODIC_PULSE,
+                    period_ms=int(blink_interval_ms),
+                    pulse_ms=pulse,
+                )
+                self._sweet_trend_active = True
+            else:
+                self.leds.set_pattern("green", PatternKind.OFF)
+                self.leds.set_pattern("yellow", PatternKind.PHASE_A)
+                self.leds.set_pattern("red", PatternKind.PHASE_B)
+                self._sweet_trend_active = False
         elif band == SweetBand.BAD:
-            self.leds.set_pattern("green", PatternKind.OFF)
             self.leds.set_pattern("yellow", PatternKind.OFF)
             self.leds.set_pattern("red", PatternKind.ON)
+            if improving:
+                self.leds.set_pattern(
+                    "green",
+                    PatternKind.PERIODIC_PULSE,
+                    period_ms=int(blink_interval_ms),
+                    pulse_ms=pulse,
+                )
+                self._sweet_trend_active = True
+            else:
+                self.leds.set_pattern("green", PatternKind.OFF)
+                self._sweet_trend_active = False
         else:
             self.leds.set_pattern("green", PatternKind.OFF)
             self.leds.set_pattern("yellow", PatternKind.OFF)
             self.leds.set_pattern("red", PatternKind.OFF)
+            self._sweet_trend_active = False
         self._apply_wlan_led()
 
     # ------------------------------------------------------------------ buttons
@@ -810,23 +919,35 @@ class HeadlessApp:
         if not port:
             self._enter(DeviceState.ERROR2)
             return
-        self._sweetp_stats.reset()
-        self._sweetp_snapshot = None
+        self._reset_sweetp_cycle()
         self._claim_uart("sweetp")
         if not self.sweet_point.start(port):
             self._release_uart()
             self._enter(DeviceState.ERROR2)
             return
+        log.info("SweetP positioning cycle started")
         self._enter(DeviceState.POSITIONING)
 
+    def _reset_sweetp_cycle(self) -> None:
+        cfg = dict(self._filter_cfg.to_dict())
+        live_cfg = getattr(self.sweet_point, "filter_config_dict", None)
+        if callable(live_cfg):
+            cfg = live_cfg()
+        elif isinstance(live_cfg, dict):
+            cfg = live_cfg
+        self._sweetp_stats.reset(filter_config=cfg)
+        self._sweetp_snapshot = None
+        self._clear_sweet_trend()
+
     def _try_begin_read(self) -> None:
+        # READ acceptance uses stable score only (never fast_score).
         score = self.runtime.sweet_score
         has_tag = self.runtime.sweet_has_tag
         if not score_allows_read(
             score, has_tag=has_tag, thresholds=self._thresholds
         ):
             log.info(
-                "start_rejected_due_to_quality score=%s has_tag=%s",
+                "start_rejected_due_to_quality stable_score=%s has_tag=%s",
                 score,
                 has_tag,
             )
@@ -838,12 +959,17 @@ class HeadlessApp:
         )
         self._sweetp_snapshot = snapshot
         log.info(
-            "READ accepted with SweetP score=%s band=%s samples=%s",
+            "READ accepted stable_score=%s band=%s samples=%s "
+            "min=%s avg=%s max=%s",
             snapshot.score_at_accept,
             snapshot.band_at_accept,
             snapshot.sample_count,
+            snapshot.minimum,
+            snapshot.average,
+            snapshot.maximum,
         )
         # Release SweetP before opening capture serial
+        self._clear_sweet_trend()
         self.sweet_point.stop()
         if self._uart_owner == "sweetp":
             self._release_uart()
@@ -857,10 +983,15 @@ class HeadlessApp:
         self._claim_uart("collector")
         self._enter(DeviceState.READ)
         self.runtime.collector_running = True
+        artifacts: dict[str, str] = {}
+        trace = snapshot.trace_jsonl()
+        if trace:
+            artifacts["sweetp_trace.jsonl"] = trace
         self.collector.start(
             DipMode.MAIN,
             port=self.runtime.reader_port,
             summary_extra={"sweetp": snapshot.to_dict()},
+            artifact_files=artifacts,
         )
 
     def _request_cancel(self) -> None:
@@ -870,7 +1001,7 @@ class HeadlessApp:
             self.sweet_point.stop()
             if self._uart_owner == "sweetp":
                 self._release_uart()
-            self._sweetp_stats.reset()
+            self._reset_sweetp_cycle()
             self._begin_cancel_sequence()
             return
         if self.collector.is_running():
@@ -1105,6 +1236,8 @@ class HeadlessApp:
         if error:
             self.runtime.last_error = error
         log.info("State %s → %s", prev.value, state.value)
+        if state not in (DeviceState.SWEETP, DeviceState.POSITIONING):
+            self._clear_sweet_trend()
         self._apply_state_leds(state)
         if state == DeviceState.CANCELLED:
             self._start_cancel_red_flash()

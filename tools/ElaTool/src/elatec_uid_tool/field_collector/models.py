@@ -112,6 +112,8 @@ class CollectorConfig:
     notes: str = ""
     # Merged into capture summary.json before export packing (e.g. SweetP stats).
     summary_extra: dict[str, Any] | None = None
+    # Extra text files written into the capture dir before TAR packing.
+    artifact_files: dict[str, str] | None = None
 
     def resolved_data_root(self) -> str:
         if self.data_root:

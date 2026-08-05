@@ -48,6 +48,9 @@ into `summary.json` (and therefore into the export TAR) under `sweetp`:
 Only numeric tagged samples from the current positioning cycle are included.
 Captures without SweetP positioning keep backward-compatible empty/null stats.
 
+Per-sample diagnostics (same cycle) are written to `sweetp_trace.jsonl`
+and packed into the export TAR. Scores are **read quality**, not RF RSSI.
+
 ## Export TAR (one tag → one archive)
 
 After each successful sniff of **one tag**, every artifact from that capture is

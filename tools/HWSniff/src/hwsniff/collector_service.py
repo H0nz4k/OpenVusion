@@ -46,6 +46,7 @@ class CollectorService(Protocol):
         *,
         port: str | None = None,
         summary_extra: dict[str, Any] | None = None,
+        artifact_files: dict[str, str] | None = None,
     ) -> None: ...
 
     def request_stop(self) -> None: ...
@@ -101,6 +102,7 @@ class MockCollector:
         self._reader_done = False
         self._saving = False
         self.summary_extra: dict[str, Any] | None = None
+        self.artifact_files: dict[str, str] | None = None
 
     def start(
         self,
@@ -108,6 +110,7 @@ class MockCollector:
         *,
         port: str | None = None,
         summary_extra: dict[str, Any] | None = None,
+        artifact_files: dict[str, str] | None = None,
     ) -> None:
         del port
         if self._running:
@@ -116,6 +119,7 @@ class MockCollector:
         self._result = None
         self._mode = mode
         self.summary_extra = dict(summary_extra) if summary_extra else None
+        self.artifact_files = dict(artifact_files) if artifact_files else None
         self._running = True
         self._t0 = self._clock()
         self._phase_idx = -1
@@ -228,6 +232,7 @@ class CaptureCollector:
         self.on_save_started: Callable[[], None] | None = None
         self.on_error: Callable[[dict[str, Any]], None] | None = None
         self._summary_extra: dict[str, Any] | None = None
+        self._artifact_files: dict[str, str] | None = None
 
     def start(
         self,
@@ -235,6 +240,7 @@ class CaptureCollector:
         *,
         port: str | None = None,
         summary_extra: dict[str, Any] | None = None,
+        artifact_files: dict[str, str] | None = None,
     ) -> None:
         with self._lock:
             if self._running:
@@ -248,6 +254,7 @@ class CaptureCollector:
                 return
             self._mode = mode
             self._summary_extra = dict(summary_extra) if summary_extra else None
+            self._artifact_files = dict(artifact_files) if artifact_files else None
             self._result = None
             self._reader_complete = False
             self._progress = CollectorProgress()
@@ -350,6 +357,7 @@ class CaptureCollector:
                 label="hwsniff-v2",
                 state="field",
                 summary_extra=self._summary_extra,
+                artifact_files=self._artifact_files,
             )
             collector = FieldCollector(
                 collector_config,
