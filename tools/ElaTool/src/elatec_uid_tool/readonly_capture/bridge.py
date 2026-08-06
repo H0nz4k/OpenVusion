@@ -85,7 +85,7 @@ def probe_to_field_result(
     if export_bundle:
         metadata["export_bundle"] = export_bundle
 
-    # Pull identification / application hex from summary if present.
+    # Pull technology / identification metadata from summary if present.
     summary_path = Path(result.output_dir) / "summary.json"
     if summary_path.exists():
         try:
@@ -94,9 +94,18 @@ def probe_to_field_result(
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
             ident = summary.get("identification") or {}
             get_version = ident.get("raw_hex")
+            technology = summary.get("technology")
+            if technology:
+                metadata["technology"] = technology
+            if summary.get("technology_dispatch"):
+                metadata["technology_dispatch"] = summary.get("technology_dispatch")
+            if summary.get("felica"):
+                metadata["felica"] = summary.get("felica")
             metadata["summary"] = {
                 "uid": summary.get("uid"),
                 "overall_status": summary.get("overall_status"),
+                "technology": technology,
+                "tag_type": summary.get("tag_type"),
             }
         except (OSError, ValueError):
             pass
