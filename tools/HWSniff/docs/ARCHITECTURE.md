@@ -29,7 +29,7 @@ uses the same read-only `NtagI2CPlus` helpers without writing capture packages.
 | Role | Path |
 |---|---|
 | App install | `/opt/Sniff` |
-| Vendored ElaTool | `/opt/Sniff/vendor/ElaTool` |
+| Vendored ElaTool | `/opt/Sniff/_vendor/ElaTool` (canonical; `vendor/` mirrored for compat) |
 | venv | `/opt/Sniff/.venv` |
 | Config | `/etc/hwsniff/config.json` |
 | Data | `/var/lib/hwsniff` |

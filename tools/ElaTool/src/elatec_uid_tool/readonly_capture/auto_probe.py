@@ -156,15 +156,44 @@ class AutoCaptureProbe(CaptureProbe):
             data["system_codes_error"] = f"{type(exc).__name__}: {exc}"
             status = PhaseStatus.PARTIAL
 
-        if FELICA_NDEF_SYSTEM_CODE in self._felica_system_codes:
-            selected = felica_poll(self._client, FELICA_NDEF_SYSTEM_CODE)
-            if selected.idm != expected_idm:
-                raise SerialCommunicationError(
-                    "FeliCa Poll(0x12FC) changed IDm: "
-                    f"{self._uid} -> {selected.idm.hex().upper()}"
-                )
-            self._felica_poll_ndef = selected
-            data["poll_12fc"] = selected.to_dict()
+        # Prefer RequestSystemCode, but do not hard-gate NDEF on it alone —
+        # a flaky/empty 1D03 response must not skip a working Poll(0x12FC).
+        ndef_listed = FELICA_NDEF_SYSTEM_CODE in self._felica_system_codes
+        data["ndef_system"] = {
+            "system_code": "0x12FC",
+            "available": ndef_listed,
+            "listed_by_request_system_code": ndef_listed,
+        }
+        try_ndef = ndef_listed
+        if not try_ndef:
+            try:
+                probe = felica_poll(self._client, FELICA_NDEF_SYSTEM_CODE)
+                if probe.idm != expected_idm:
+                    raise SerialCommunicationError(
+                        "FeliCa Poll(0x12FC) changed IDm: "
+                        f"{self._uid} -> {probe.idm.hex().upper()}"
+                    )
+                try_ndef = True
+                self._felica_poll_ndef = probe
+                data["poll_12fc"] = probe.to_dict()
+                data["ndef_system"]["available"] = True
+                data["ndef_system"]["discovered_via"] = "direct_poll_fallback"
+            except SerialCommunicationError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - soft: keep FeliCa confirmed
+                data["ndef_system"]["poll_error"] = f"{type(exc).__name__}: {exc}"
+                status = PhaseStatus.PARTIAL
+
+        if try_ndef:
+            if self._felica_poll_ndef is None:
+                selected = felica_poll(self._client, FELICA_NDEF_SYSTEM_CODE)
+                if selected.idm != expected_idm:
+                    raise SerialCommunicationError(
+                        "FeliCa Poll(0x12FC) changed IDm: "
+                        f"{self._uid} -> {selected.idm.hex().upper()}"
+                    )
+                self._felica_poll_ndef = selected
+                data["poll_12fc"] = selected.to_dict()
 
             # Diagnostic only: physical SOLUM returned Result=false here while
             # direct CHECK succeeded. Never gate the read on this result.
@@ -196,10 +225,6 @@ class AutoCaptureProbe(CaptureProbe):
                 data["block0_error"] = f"{type(exc).__name__}: {exc}"
                 status = PhaseStatus.PARTIAL
         else:
-            data["ndef_system"] = {
-                "system_code": "0x12FC",
-                "available": False,
-            }
             status = PhaseStatus.PARTIAL
 
         store.write_phase("identification", data, status.value)
@@ -256,15 +281,18 @@ class AutoCaptureProbe(CaptureProbe):
         store = self._store
         assert store is not None and self._client is not None
 
-        if (
-            FELICA_NDEF_SYSTEM_CODE not in self._felica_system_codes
-            or not self._felica_attribute
-        ):
+        # Public dump is gated on a successful NDEF select + Attribute Block,
+        # not on RequestSystemCode listing alone (empty 1D03 still allows Poll 0x12FC).
+        if self._felica_poll_ndef is None or not self._felica_attribute:
             store.write_phase(
                 "eeprom",
                 {
                     "technology": TECH_FELICA,
                     "reason": "NFC Forum Type 3 public NDEF area not available",
+                    "poll_12fc": self._felica_poll_ndef.to_dict()
+                    if self._felica_poll_ndef
+                    else None,
+                    "attribute_present": bool(self._felica_attribute),
                 },
                 PhaseStatus.UNSUPPORTED.value,
             )

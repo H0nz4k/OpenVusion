@@ -73,20 +73,29 @@ rsync -a --delete \
   --exclude 'data' \
   --exclude 'logs' \
   --exclude 'vendor' \
+  --exclude '_vendor' \
   "${HWSNIFF_SRC}/" "${PREFIX}/"
 
-# Vendor ElaTool so /opt/Sniff remains self-contained after install.
-mkdir -p "${PREFIX}/vendor"
+# Canonical ElaTool path matches deploy/ (_vendor). Mirror to vendor/ for compat.
+mkdir -p "${PREFIX}/_vendor" "${PREFIX}/vendor"
 rsync -a --delete \
   --exclude '.venv' \
   --exclude '__pycache__' \
   --exclude 'captures' \
   --exclude '*.pyc' \
+  --exclude '*.egg-info' \
+  "${ELATOOL_SRC}/" "${PREFIX}/_vendor/ElaTool/"
+rsync -a --delete \
+  --exclude '.venv' \
+  --exclude '__pycache__' \
+  --exclude 'captures' \
+  --exclude '*.pyc' \
+  --exclude '*.egg-info' \
   "${ELATOOL_SRC}/" "${PREFIX}/vendor/ElaTool/"
 
 python3 -m venv "${PREFIX}/.venv"
 "${PREFIX}/.venv/bin/pip" install --upgrade pip
-"${PREFIX}/.venv/bin/pip" install -e "${PREFIX}/vendor/ElaTool"
+"${PREFIX}/.venv/bin/pip" install -e "${PREFIX}/_vendor/ElaTool"
 "${PREFIX}/.venv/bin/pip" install -e "${PREFIX}"
 
 if [[ -f "${CONFIG_DIR}/config.json" ]]; then

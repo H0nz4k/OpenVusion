@@ -21,7 +21,7 @@ GPIO_PHYSICAL: dict[str, int] = {
 DEFAULT_CONFIG: dict[str, Any] = {
     "platform": "pi-zero-gpio",
     "hardware_profile": "v2",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "data_root": "/var/lib/hwsniff",
     "capture_root": "/var/lib/hwsniff/captures",
     "log_root": "/var/log/hwsniff",

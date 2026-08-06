@@ -59,7 +59,7 @@ For a FeliCa candidate:
 Poll(FFFF)
 -> require IDm == SearchTag ID
 -> RequestSystemCode
--> if 0x12FC: Poll(12FC)
+-> Poll(12FC) when 0x12FC is listed OR as soft fallback if listing is empty/flaky
 -> require same IDm
 -> RequestService(000B) as diagnostic only
 -> direct CHECK / Read Without Encryption, block 0
@@ -72,7 +72,8 @@ RequestService(000B) == false
 ```
 
 does **not** prevent direct CHECK. The tested SOLUM target behaves exactly this
-way.
+way. `RequestSystemCode` alone also must not hard-gate NDEF: if it returns no
+codes, the probe still attempts `Poll(0x12FC)` before giving up on public reads.
 
 Block 0 is parsed as NFC Forum Type 3 Attribute Information Block.
 

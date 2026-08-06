@@ -93,6 +93,15 @@ class FelicaFakeClient:
         assert frame[14] == 0x80
 
 
+class EmptySystemCodeFelicaClient(FelicaFakeClient):
+    """RequestSystemCode returns empty; Poll(0x12FC) still works (soft fallback)."""
+
+    def _request(self, command: bytes) -> bytes:
+        if command == bytes.fromhex("1D0308"):
+            return bytes.fromhex("0100")  # Result=true, count=0
+        return super()._request(command)
+
+
 class FelicaAutoDispatchTests(unittest.TestCase):
     def setUp(self):
         FelicaFakeClient.iso14443_calls = 0
@@ -181,6 +190,38 @@ class FelicaAutoDispatchTests(unittest.TestCase):
             self.assertEqual(result.phase_status.get("session"), "skipped")
             self.assertEqual(result.phase_status.get("verify"), "ok")
             self.assertEqual(FelicaFakeClient.iso14443_calls, 0)
+
+    def test_empty_request_system_code_still_tries_poll_12fc(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            probe = CaptureProbe(
+                ProbeConfig(
+                    port="COM13",
+                    output=Path(tmp),
+                    tag_timeout=1,
+                    retry_count=2,
+                    retry_delay_ms=0,
+                    session_seconds=0.01,
+                    session_interval_ms=0,
+                    poll_interval_seconds=0,
+                    confirm_reads=3,
+                    quiet=True,
+                ),
+                client_factory=lambda p, t: EmptySystemCodeFelicaClient(p, t),
+                sleep=lambda _d: None,
+            )
+            result = probe.run()
+            self.assertEqual(result.overall, OverallStatus.SUCCESS)
+            summary = json.loads((result.output_dir / "summary.json").read_text())
+            self.assertEqual(summary["technology"], "felica_type3")
+            ident = json.loads(
+                (result.output_dir / "phases" / "identification.json").read_text()
+            )
+            self.assertTrue(ident["ndef_system"]["available"])
+            self.assertEqual(
+                ident["ndef_system"].get("discovered_via"),
+                "direct_poll_fallback",
+            )
+            self.assertIn("poll_12fc", ident)
 
 
 if __name__ == "__main__":

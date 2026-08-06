@@ -149,7 +149,12 @@ assert DeviceState.ERROR2
 assert DeviceState.POSITIONING
 assert DipMode.MAIN
 assert hwsniff.__version__.startswith("2.")
+from elatec_uid_tool.readonly_capture import CaptureProbe, AutoCaptureProbe
+import elatec_uid_tool.readonly_capture.felica as felica
+assert CaptureProbe is AutoCaptureProbe
+assert hasattr(felica, "felica_poll")
 print("import ok:", hwsniff.__version__, hwsniff.__file__)
+print("capture probe:", CaptureProbe.__name__)
 PY
 
 # --- 6) config (v2 profile required; never silently reuse alpha1 pins) ------

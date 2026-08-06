@@ -51,13 +51,18 @@ fi
 
 chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_ROOT"
 
-# Smoke import (must include ElaTool — service crashes without it)
+# Smoke import (must include ElaTool FeliCa auto-dispatch — service crashes without it)
 sudo -u "$SERVICE_USER" "$INSTALL_ROOT/.venv/bin/python" - <<'PY'
 import hwsniff
 import elatec_uid_tool.ntag
+import elatec_uid_tool.readonly_capture.felica as felica
+from elatec_uid_tool.readonly_capture import CaptureProbe, AutoCaptureProbe
 from hwsniff.gpio_backend import GpioZeroBackend
-print("hwsniff ok:", hwsniff.__file__)
+assert CaptureProbe is AutoCaptureProbe
+assert hasattr(felica, "felica_poll")
+print("hwsniff ok:", hwsniff.__version__, hwsniff.__file__)
 print("elatec_uid_tool ok:", elatec_uid_tool.ntag.__file__)
+print("capture probe:", CaptureProbe.__name__)
 PY
 
 if [[ "$RESTART" == "1" ]]; then

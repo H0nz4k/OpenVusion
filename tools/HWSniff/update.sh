@@ -55,7 +55,7 @@ What this script does NOT do by default:
 --code-only     Sync code only (no restart, no usermod, never unit)
 --no-restart    Sync code, leave service running (restart yourself)
 --update-unit   DANGEROUS on Waveshare/X11: installs template unit from repo
---reinstall-deps  pip install -e ElaTool + HWSniff into venv
+--reinstall-deps  also upgrade pip/wheel (editable ElaTool+HWSniff always reinstalled)
 EOF
       exit 0
       ;;
@@ -98,17 +98,31 @@ rsync -a --delete \
   --exclude 'data' \
   --exclude 'logs' \
   --exclude 'vendor' \
+  --exclude '_vendor' \
   --exclude 'scripts/local/' \
   "${HWSNIFF_SRC}/" "${PREFIX}/"
 
+# Canonical ElaTool tree for the appliance venv (same path as deploy/).
+# Older installs used vendor/ElaTool; keep syncing both during transition, but
+# always (re)install editable from _vendor so FeliCa auto-dispatch is live.
 if [[ -d "${ELATOOL_SRC}" ]]; then
-  echo "Syncing ElaTool → ${PREFIX}/vendor/ElaTool"
+  echo "Syncing ElaTool → ${PREFIX}/_vendor/ElaTool"
+  mkdir -p "${PREFIX}/_vendor"
+  rsync -a --delete \
+    --exclude '.venv' \
+    --exclude '__pycache__' \
+    --exclude 'captures' \
+    --exclude '*.pyc' \
+    --exclude '*.egg-info' \
+    "${ELATOOL_SRC}/" "${PREFIX}/_vendor/ElaTool/"
+  # Compatibility mirror for docs/scripts that still mention vendor/
   mkdir -p "${PREFIX}/vendor"
   rsync -a --delete \
     --exclude '.venv' \
     --exclude '__pycache__' \
     --exclude 'captures' \
     --exclude '*.pyc' \
+    --exclude '*.egg-info' \
     "${ELATOOL_SRC}/" "${PREFIX}/vendor/ElaTool/"
 fi
 
@@ -129,11 +143,37 @@ if [[ "${TOUCH_USER}" -eq 1 ]] && id hwsniff >/dev/null 2>&1; then
     || usermod -aG dialout,video,input hwsniff || true
 fi
 
-if [[ "${REINSTALL_DEPS}" -eq 1 ]]; then
-  echo "Reinstalling Python packages into venv…"
-  "${PREFIX}/.venv/bin/pip" install -e "${PREFIX}/vendor/ElaTool"
-  "${PREFIX}/.venv/bin/pip" install -e "${PREFIX}"
+# Deterministic: point venv at the freshly synced ElaTool (FeliCa modules).
+# --reinstall-deps additionally upgrades pip tooling; editable install is always done.
+if [[ -x "${PREFIX}/.venv/bin/pip" ]]; then
+  if [[ "${REINSTALL_DEPS}" -eq 1 ]]; then
+    echo "Upgrading pip tooling…"
+    "${PREFIX}/.venv/bin/pip" install -U pip wheel
+  fi
+  if [[ -d "${PREFIX}/_vendor/ElaTool" ]]; then
+    echo "Installing ElaTool editable from _vendor (FeliCa-capable)…"
+    "${PREFIX}/.venv/bin/pip" install -e "${PREFIX}/_vendor/ElaTool" -q
+  elif [[ -d "${PREFIX}/vendor/ElaTool" ]]; then
+    echo "WARNING: only legacy vendor/ElaTool present — installing from there"
+    "${PREFIX}/.venv/bin/pip" install -e "${PREFIX}/vendor/ElaTool" -q
+  else
+    echo "ERROR: ElaTool vendor tree missing under ${PREFIX}/_vendor or vendor"
+    exit 1
+  fi
+  echo "Installing HWSniff editable…"
+  "${PREFIX}/.venv/bin/pip" install -e "${PREFIX}" -q
 fi
+
+# Smoke: shared capture must expose technology-aware CaptureProbe + FeliCa helpers.
+"${PREFIX}/.venv/bin/python" - <<'PY'
+from elatec_uid_tool.readonly_capture import CaptureProbe, AutoCaptureProbe
+import elatec_uid_tool.readonly_capture.felica as felica
+import hwsniff
+assert CaptureProbe is AutoCaptureProbe
+assert hasattr(felica, "felica_poll")
+assert hasattr(felica, "request_service_diag")
+print("smoke ok:", hwsniff.__version__, CaptureProbe.__name__)
+PY
 
 if [[ "${UPDATE_UNIT}" -eq 1 ]]; then
   echo

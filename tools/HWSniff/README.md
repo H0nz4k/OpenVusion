@@ -1,4 +1,4 @@
-# OpenVusion HWSniff v2 — Pi Zero 2 W
+# OpenVusion HWSniff v2.1 — Pi Zero 2 W
 
 **Primary target:** Raspberry Pi Zero 2 W **without display**.
 
@@ -8,6 +8,8 @@
 - 4 LEDs: green / yellow / red / blue
 - Headless Python systemd service (GPIO only)
 - **Real capture** via shared ElaTool `readonly_capture` engine (PCSniff parity)
+- **Automatic technology dispatch:** NTAG I²C Plus **or** FeliCa / NFC Forum Type 3
+  (see [`docs/FELICA_AUTO_DISPATCH.md`](docs/FELICA_AUTO_DISPATCH.md))
 
 **Not used:** LCD, touchscreen, Xorg, xinit, pygame, SDL, framebuffer, Waveshare.
 
@@ -174,6 +176,15 @@ See **[deploy/README.md](deploy/README.md)**.
 ```powershell
 cd tools\HWSniff\deploy
 .\deploy-to-pi.ps1
+```
+
+On an already-installed appliance (pulls OpenVusion + syncs HWSniff **and**
+ElaTool into `/opt/Sniff/_vendor/ElaTool`, reinstalls editable packages, restarts):
+
+```bash
+cd /opt/OpenVusion   # or your clone path
+sudo bash tools/HWSniff/safe-update.sh --restart
+# smoke must print CaptureProbe / hwsniff 2.1.x
 ```
 
 ```bash

@@ -4,4 +4,4 @@ Uses the shared ElaTool ``readonly_capture`` engine (PCSniff parity).
 Legacy Waveshare/X11/pygame UI lives in ``hwsniff.legacy``.
 """
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
