@@ -13,12 +13,13 @@ This note records a physical experiment on the SOLUM EL026F3BYA / Albert ESL wit
 5. Run capture after battery reinstall:
    - `06082026_22_20_8fa2d241bb49.tar`
 6. Observe ESL display after battery restart.
+7. Remove battery again and run a minimal PC-side read-only test with exactly one `Poll(0x12FC)` followed by direct CHECKs without any intervening re-Poll.
 
-All NFC/HWSniff operations used the strict read-only FeliCa path.
+All NFC/HWSniff/PC operations used the strict read-only FeliCa path.
 
 ## Result: FeliCa works without the ESL battery
 
-Both batteryless runs detect exactly the same target:
+Batteryless runs detect exactly the same target:
 
 ```text
 SearchTag tag_type = 0x85
@@ -36,11 +37,11 @@ RequestSystemCode -> 0x12FC
 FeliCa Poll(12FC)
 ```
 
-This proves that at least the FeliCa/NFC identification and Type-3 system-selection path can operate from the RF field without the main ESL battery.
+This proves that FeliCa/NFC identification and Type-3 system selection can operate from the RF field without the main ESL battery.
 
-## Batteryless public-memory behavior
+## Initial HWSniff batteryless behavior
 
-The current HWSniff v2.1.0 per-block strategy re-Polls `0x12FC` before public reads. Without the battery, repeated immediate Poll(12FC) calls are less reliable and may return `Result=false`.
+The HWSniff v2.1.0 per-block strategy re-Polls `0x12FC` before each public read. Without the battery, repeated immediate Poll(12FC) calls were less reliable and could return `Result=false`.
 
 Batteryless capture #1 therefore finished `PARTIAL` and did not obtain Attribute block 0.
 
@@ -59,9 +60,105 @@ Ln           = 27
 checksum     = valid
 ```
 
-So the Type-3 public data is not proven to require the main battery. At minimum block 0 is physically readable while the ESL battery is removed. The reduced reliability appears related to RF/select timing or repeated re-Poll behavior, not loss of FeliCa identity.
+This suggested the failure was caused by repeated re-selection timing rather than by dependence of public Type-3 memory on the main battery.
 
-Recommended follow-up: use a minimal read-only sequence `Poll(12FC) -> direct CHECK` without an additional Poll before every CHECK to distinguish passive memory capability from the current HWSniff re-selection timing behavior.
+## Minimal batteryless CHECK experiment — confirmed
+
+A dedicated PC-side script then performed exactly:
+
+```text
+SearchTag
+Poll(FFFF)
+RequestSystemCode
+Poll(12FC)        # exactly once
+CHECK block 0
+CHECK block 1
+CHECK block 2
+CHECK block 54
+CHECK block 55
+CHECK block 56
+```
+
+There was no `RequestService` and no additional Poll between individual CHECK operations.
+
+Result with the ESL battery physically removed:
+
+```text
+blocks_success = 6/6
+all_selected_blocks_readable = true
+batteryless_public_read_evidence = STRONG
+```
+
+Every selected block succeeded on the **first CHECK attempt**:
+
+```text
+block 0   29.19 ms
+block 1   29.09 ms
+block 2   29.37 ms
+block 54  29.15 ms
+block 55  26.28 ms
+block 56  28.70 ms
+```
+
+No IDm mismatch occurred and all FeliCa status flags were `0x00 / 0x00`.
+
+The returned data exactly includes the active Type-3 Attribute/NDEF data and the known vendor tail:
+
+```text
+0:  100201003C00000000000000001B006A
+1:  D101175504616C626572742E637A2F30
+2:  39413239343530433339460000000000
+54: 00000000000000004C10AA640009A294
+55: 50C39F0000000009A294500600000000
+56: 7F000000000000000000000000000000
+```
+
+The Attribute Information Block remains valid:
+
+```text
+NDEF mapping = 1.0
+Nbr          = 2
+Nbw          = 1
+Nmaxb        = 60
+RWFlag       = read-only
+Ln           = 27
+checksum     = 0x006A valid
+```
+
+The active NDEF record decodes to:
+
+```text
+https://albert.cz/09A29450C39F
+```
+
+and the six-byte vendor-boundary identifier remains:
+
+```text
+09A29450C39F
+```
+
+### Conclusion
+
+This experiment strongly confirms that the relevant public NFC Forum Type 3 storage is **passively readable without the ESL main battery**. The RF field from the reader is sufficient for successful FeliCa selection and direct public-memory CHECK operations.
+
+It also confirms that the earlier HWSniff batteryless PARTIAL results were not evidence that the Type-3 memory required the battery. They were consistent with the current strategy of re-Polling `0x12FC` before every block.
+
+This is a strong reason to consider changing the FeliCa capture strategy from:
+
+```text
+Poll(12FC) -> CHECK one block -> Poll(12FC) -> CHECK next block -> ...
+```
+
+to a selected-session strategy such as:
+
+```text
+Poll(12FC) once
+-> verify IDm
+-> multiple CHECK operations
+-> re-Poll only on transient failure / recovery path
+```
+
+while retaining the strict IDm guard and read-only invariant.
 
 ## Power-cycle did not modify public FeliCa memory
 
@@ -128,22 +225,4 @@ SOLUM ESL -------|
                           +-- canonical device ID / vendor metadata
 ```
 
-The exact electrical partition is not yet confirmed by PCB tracing, but the batteryless FeliCa operation demonstrates that NFC has an independent passive-power capability sufficient for identification and at least some Type-3 reads.
-
-## Next NFC experiment
-
-Before waiting for new RF hardware, perform one strict read-only batteryless test using a minimal selection sequence:
-
-```text
-SearchTag
-Poll(FFFF)
-RequestSystemCode
-Poll(12FC)
-CHECK block 0 directly
-CHECK blocks 1..2 directly
-CHECK blocks 54..56 directly
-```
-
-Do not insert RequestService or repeated Poll(12FC) between each block for this experiment. Compare returned bytes with the known powered dump.
-
-If all selected blocks match while the battery is absent, passive access to the relevant public Type-3 storage is confirmed independently of the current HWSniff re-Poll timing issue.
+The exact electrical partition is not yet confirmed by PCB tracing, but the batteryless direct CHECK experiment shows that passive NFC-field power is sufficient not only for identification but also for the selected public Type-3 reads tested here.
