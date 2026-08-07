@@ -31,6 +31,21 @@
 
 ### Added
 
+- Read-only VUSION/NTAG stock-session watcher documenting the physical
+  `NC_REG/NS_REG` pass-through sequence and `SRAM_RF_READY` window.
+- Direct physical capture of the stock VUSION 64-byte NTAG SRAM mailbox while
+  `PTHRU_ON_OFF=1`, `TRANSFER_DIR=I2C->NFC` and `SRAM_RF_READY=1`.
+- 50-cycle SRAM study with 50/50 successful captures, timing statistics,
+  constant/dynamic byte classification and cross-cycle recurrence analysis.
+- Confirmed in-frame SES identity link: SRAM bytes `C9 D0 2C AA` are the
+  little-endian form of `AA2CD0C9`, matching the same tag's NDEF URI and EEPROM
+  manufacturer/application block.
+- Confirmed complete RF-side SRAM read consumes the transient mailbox:
+  `SRAM_RF_READY` clears and `TRANSFER_DIR` flips to `NFC->I2C` in 50/50 cycles.
+- Research notes separating physical evidence from public-project comparison
+  (`fanhuanji/VUSION4.2BWR_GL340`, `BeatSkip/SES-Imagotag-UU340`,
+  OpenEPaperLink SOLUM EFR32 work, TagTinker).
+- Current research index under `docs/RESEARCH_INDEX_2026-08-07.md`.
 - DIP2 **WiFi upload mode**: FTP/FTPS transfer of primary export bundles with
   persistent `upload-state.json`, LED status patterns, and retry while DIP2 stays ON.
 - GPIO UART reader support via `preferred_serial: "/dev/serial0"` (9600 8N1),
