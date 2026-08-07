@@ -2,6 +2,8 @@
 
 Date: 2026-08-07
 
+Status: **follow-up completed**. The `SRAM_RF_READY=1` window was subsequently captured directly, first in 3 cycles and then in 50/50 cycles. See [`VUSION_NTAG_SRAM_MAILBOX_2026-08-07.md`](VUSION_NTAG_SRAM_MAILBOX_2026-08-07.md).
+
 ## Device under test
 
 - SES-imagotag / VUSION 2.6 family
@@ -102,38 +104,42 @@ CC2510 stock firmware
 
 The original VUSION firmware therefore reacts to NFC field activation and deliberately stages a transient message for an NFC reader.
 
-This does **not** yet identify the contents of that message. It may contain identification, status, provisioning/commissioning data, challenge/response material, configuration, or another proprietary handshake. It must not be assumed to contain an AP key.
+This does **not** by itself identify the contents of that message. It may contain identification, status, provisioning/commissioning data, challenge/response material, configuration, or another proprietary handshake. It must not be assumed to contain an AP key.
 
 The behavior closely matches the hardware mechanism used by the independent `fanhuanji/VUSION4.2BWR_GL340` project, which also drives NTAG I2C pass-through and SRAM from CC2510 firmware. Their application protocol is custom and must not be treated as evidence for the stock SES protocol; only the NTAG hardware mechanism is directly comparable.
 
-## Next safe experiment
+## Follow-up result
 
-The next non-writing test should wait for this exact state:
+The planned single-read SRAM experiment was completed successfully.
+
+The RF-side SRAM was read exactly once while:
 
 - `PTHRU_ON_OFF = 1`
 - `TRANSFER_DIR = I2C -> NFC`
 - `SRAM_RF_READY = 1`
-- same UID still selected
+- the same UID remained selected.
 
-Then perform exactly one RF read of the mapped NTAG SRAM (`F0..FF`, 64 bytes), store the result, and continue watching session state without sending any NFC WRITE.
+The 64-byte mailbox was captured 3/3 in the first experiment and later **50/50** in the statistical run.
 
-A full `F0..FF` read is expected to consume/acknowledge the staged SRAM frame at the NTAG state-machine level, so it is not behaviorally passive, but it remains non-writing and should not alter persistent EEPROM. The result should be compared across multiple fresh RF-off/RF-on cycles to separate constant fields from per-session nonces/challenges.
+Key findings from the follow-up:
 
-Useful analysis after capture:
+- frame layout is stable: 16B header + 32B dynamic data + 14 zero bytes + 2B dynamic trailer;
+- the header contains `C9 D0 2C AA`, the little-endian form of the known SES ID `AA2CD0C9` from NDEF and EEPROM;
+- consuming the complete SRAM frame always clears `SRAM_RF_READY` and flips `TRANSFER_DIR` to `NFC -> I2C`;
+- the dynamic 32B region has high empirical entropy but contains long exact repeated sequences across cycles, including one full 16B block recurring in another cycle/position;
+- no simple 16/32-bit monotonic counter was found;
+- common CRC16/checksum candidates did not explain the 2-byte trailer.
 
-- compare 64-byte frames across cycles byte-by-byte,
-- identify constant vs changing offsets,
-- look for UID/device identifiers in normal/reversed order,
-- inspect end-of-frame counters/commands/CRC candidates,
-- correlate any changing field with cycle timing,
-- do not label any bytes as AP key/key material without independent evidence.
+Full result and confidence classification:
 
-## Reproducibility
+[`VUSION_NTAG_SRAM_MAILBOX_2026-08-07.md`](VUSION_NTAG_SRAM_MAILBOX_2026-08-07.md)
 
-Two consecutive cycles were effectively identical:
+## Reproducibility of the original watcher
+
+Two consecutive watcher cycles were effectively identical:
 
 1. ~0 ms: `NC=0x7C`, `NS=0x41`
 2. ~60 ms: `NC=0x7C`, `NS=0x29`
 3. ~1.20 s: `NC=0x19`, `NS=0x01`
 
-This makes the event suitable for deterministic SRAM capture in a follow-up script.
+The 50-cycle follow-up then reproduced the READY event and complete SRAM capture in every requested cycle.
