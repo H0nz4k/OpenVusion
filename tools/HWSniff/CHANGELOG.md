@@ -57,9 +57,16 @@
 - OFF duration has negligible simple effect on `A+B` Hamming similarity, while
   READY timing changes strongly between short and long OFF regimes. Main research
   direction therefore moves from bulk NFC collection toward read-only CC2510
-  stock-firmware analysis after the V2.1 boundary follow-up completes.
+  stock-firmware analysis.
 - Detailed recurrence result:
   `docs/VUSION_NTAG_COLD_BOOT_STATE_RECURRENCE_2026-08-08.md`.
+- V2.1 boundary follow-up archive was partial: 25 successful captures across
+  OFF 0.5/1/2/5 s, then one `OFF=5 s` cycle stayed at `NC=0x19 / NS=0x01`
+  with RF field present but no PTHRU or `SRAM_RF_READY` for >3 s. The later
+  8–18 s and boot-before-RF sweeps were never reached. Short-OFF READY behavior
+  remains ~0.48 s and no exact A/B restart was found in the 25 new frames.
+- Partial V2.1 result:
+  `docs/VUSION_V21_BOUNDARY_FOLLOWUP_PARTIAL_2026-08-08.md`.
 - Research notes separating physical evidence from public-project comparison
   (`fanhuanji/VUSION4.2BWR_GL340`, `BeatSkip/SES-Imagotag-UU340`,
   OpenEPaperLink SOLUM EFR32 work, TagTinker).
