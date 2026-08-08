@@ -48,6 +48,18 @@
 - First early-boot boundary point (`OFF=15 s`, RF after only `0.25 s`) did not
   reach the normal `SRAM_RF_READY` state inside the test timeout; detailed notes
   are in `docs/VUSION_NTAG_COLD_BOOT_TIMING_2026-08-08.md`.
+- Targeted cold-boot payload recurrence analysis over all 205 successful post-boot
+  SRAM frames: no duplicate `A[16]`, `B[16]`, `A+B[32]` or complete `dynamic[34]`
+  frame was found, including repeated 30 s and 60 s power-off cycles.
+- The same 205-frame dataset still contains long exact recurrence and a full
+  cross-role 16-byte repeat (`C009B == C018A`), so A/B remain structured and
+  non-independent even though a fixed post-reset seed/state is not observed.
+- OFF duration has negligible simple effect on `A+B` Hamming similarity, while
+  READY timing changes strongly between short and long OFF regimes. Main research
+  direction therefore moves from bulk NFC collection toward read-only CC2510
+  stock-firmware analysis after the V2.1 boundary follow-up completes.
+- Detailed recurrence result:
+  `docs/VUSION_NTAG_COLD_BOOT_STATE_RECURRENCE_2026-08-08.md`.
 - Research notes separating physical evidence from public-project comparison
   (`fanhuanji/VUSION4.2BWR_GL340`, `BeatSkip/SES-Imagotag-UU340`,
   OpenEPaperLink SOLUM EFR32 work, TagTinker).
