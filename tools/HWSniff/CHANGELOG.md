@@ -42,6 +42,12 @@
   manufacturer/application block.
 - Confirmed complete RF-side SRAM read consumes the transient mailbox:
   `SRAM_RF_READY` clears and `TRANSFER_DIR` flips to `NFC->I2C` in 50/50 cycles.
+- Cold-boot timing campaign: 205 successful captures across OFF durations 1–60 s;
+  short OFF (1–10 s) gives READY around ~0.48 s, while 15–60 s gives a distinct
+  slower ~0.53–0.56 s regime, exposing a reproducible boot/retention-state signal.
+- First early-boot boundary point (`OFF=15 s`, RF after only `0.25 s`) did not
+  reach the normal `SRAM_RF_READY` state inside the test timeout; detailed notes
+  are in `docs/VUSION_NTAG_COLD_BOOT_TIMING_2026-08-08.md`.
 - Research notes separating physical evidence from public-project comparison
   (`fanhuanji/VUSION4.2BWR_GL340`, `BeatSkip/SES-Imagotag-UU340`,
   OpenEPaperLink SOLUM EFR32 work, TagTinker).
