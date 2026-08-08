@@ -29,6 +29,25 @@ Confirmed:
 - full RF read consumes the ready buffer and reverses transfer direction;
 - dynamic region contains long exact recurrences across sessions.
 
+### Cold-boot timing / retention boundary
+
+[`VUSION_NTAG_COLD_BOOT_TIMING_2026-08-08.md`](VUSION_NTAG_COLD_BOOT_TIMING_2026-08-08.md)
+
+Confirmed on the physical VUSION sample:
+
+- 205 consecutive captures completed successfully before the first early-boot boundary test;
+- short main-power OFF intervals of 1–10 s produce `SRAM_RF_READY` around ~0.48 s;
+- OFF intervals of 15–60 s move READY into a slower ~0.53–0.56 s regime;
+- current transition boundary is therefore between 10 s and 15 s OFF;
+- RF activation only 0.25 s after a 15 s power-off did not reach the normal `SRAM_RF_READY` state inside the test timeout;
+- cold-boot timing therefore exposes an additional observable internal/retention state of the stock firmware.
+
+Still unproven:
+
+- whether the deeper cold boot resets the generator/state behind dynamic SRAM fields A/B;
+- whether first post-cold-boot payload values repeat deterministically;
+- exact meaning of the dynamic 16-bit trailer.
+
 ## SOLUM / FeliCa Type 3
 
 ### Automatic technology dispatch
