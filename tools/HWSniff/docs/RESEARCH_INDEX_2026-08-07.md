@@ -42,11 +42,22 @@ Confirmed on the physical VUSION sample:
 - RF activation only 0.25 s after a 15 s power-off did not reach the normal `SRAM_RF_READY` state inside the test timeout;
 - cold-boot timing therefore exposes an additional observable internal/retention state of the stock firmware.
 
-Still unproven:
+### Cold-Boot State Recurrence Analysis
 
-- whether the deeper cold boot resets the generator/state behind dynamic SRAM fields A/B;
-- whether first post-cold-boot payload values repeat deterministically;
-- exact meaning of the dynamic 16-bit trailer.
+[`VUSION_NTAG_COLD_BOOT_STATE_RECURRENCE_2026-08-08.md`](VUSION_NTAG_COLD_BOOT_STATE_RECURRENCE_2026-08-08.md)
+
+Výsledek cílené payloadové analýzy 205 prvních post-boot SRAM frame:
+
+- žádný exact restart `A[16]`, `B[16]`, `A+B[32]` ani `dynamic[34]`;
+- žádná duplicita 16bit traileru v 205 vzorcích;
+- ani opakované 30s a 60s OFF nevrací dynamickou část na jeden pevný první stav;
+- nová přesná cross-role 16B recurrence `C009B == C018A`;
+- další exact recurrence 12–15 B napříč různými OFF skupinami;
+- A/B nadále nejsou nezávislé fresh-random hodnoty, ale jednoduchý fixní cold-boot seed není podporován;
+- obsah `A+B` nevykazuje významnou jednoduchou závislost na délce OFF, zatímco READY timing ano;
+- hlavní další výzkumná větev se po dokončení V2.1 boundary follow-up přesouvá na read-only analýzu stock CC2510 firmwaru.
+
+Před debuggerem má smysl pouze jednorázově ověřit, že VDD CC2510 při dlouhém relé OFF skutečně spadne na plný power-off/POR stav.
 
 ## SOLUM / FeliCa Type 3
 
