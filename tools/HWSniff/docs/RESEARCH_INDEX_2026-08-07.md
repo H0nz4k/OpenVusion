@@ -55,9 +55,25 @@ Výsledek cílené payloadové analýzy 205 prvních post-boot SRAM frame:
 - další exact recurrence 12–15 B napříč různými OFF skupinami;
 - A/B nadále nejsou nezávislé fresh-random hodnoty, ale jednoduchý fixní cold-boot seed není podporován;
 - obsah `A+B` nevykazuje významnou jednoduchou závislost na délce OFF, zatímco READY timing ano;
-- hlavní další výzkumná větev se po dokončení V2.1 boundary follow-up přesouvá na read-only analýzu stock CC2510 firmwaru.
+- hlavní další výzkumná větev se přesouvá na read-only analýzu stock CC2510 firmwaru.
 
 Před debuggerem má smysl pouze jednorázově ověřit, že VDD CC2510 při dlouhém relé OFF skutečně spadne na plný power-off/POR stav.
+
+### V2.1 boundary follow-up — částečný výsledek
+
+[`VUSION_V21_BOUNDARY_FOLLOWUP_PARTIAL_2026-08-08.md`](VUSION_V21_BOUNDARY_FOLLOWUP_PARTIAL_2026-08-08.md)
+
+Archiv V2.1 nedoběhl do celého plánovaného sweepu:
+
+- `OFF=0.5 s`: 8/8 úspěšně, převážně READY ~0.48 s;
+- `OFF=1 s`: 8/8 úspěšně, READY ~0.482 s;
+- `OFF=2 s`: 8/8 úspěšně, READY ~0.480 s;
+- `OFF=5 s`: první frame úspěšný (~0.482 s), druhý cyklus timeout;
+- při timeoutu zůstal RF field aktivní, ale session stav zůstal `NC=0x19 / NS=0x01`, bez PTHRU a bez `SRAM_RF_READY` po více než 3 s;
+- 25 nových úspěšných frame nemá duplicate A, B, trailer, full frame ani cross-role `A==B`;
+- jemný sweep 8–18 s ani boot-before-RF sweep se kvůli stopu vůbec neprovedl.
+
+Tento partial follow-up nemění hlavní rozhodnutí: další velký NFC/cold-boot sběr nemá vysokou informační hodnotu. Hlavní pokračování čeká na bezpečný read-only průzkum CC2510 stock firmwaru.
 
 ## SOLUM / FeliCa Type 3
 
