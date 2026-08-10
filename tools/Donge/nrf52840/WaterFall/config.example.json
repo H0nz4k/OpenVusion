@@ -1,0 +1,32 @@
+{
+  "host": "0.0.0.0",
+  "port": 8088,
+  "history_sweeps": 240,
+  "csv_dir": "/var/lib/waterfall/captures",
+  "experiment_dir": "/var/lib/waterfall/experiments",
+  "rf_probe": {
+    "enabled": true,
+    "serial_port": "auto",
+    "vid": "2fe3",
+    "pid": "0001",
+    "product_prefix": "OpenVusion RF Probe",
+    "serial_number": "A66E2D26F8A4CB87",
+    "baudrate": 115200,
+    "auto_scan": true,
+    "connect_delay_ms": 350
+  },
+  "nfc_reader": {
+    "enabled": true,
+    "serial_port": "/dev/serial/by-id/usb-OEM_TWN4_B1.64_NCF5.20_PRS1.04-if00",
+    "baudrate": 9600,
+    "poll_interval_ms": 80,
+    "expected_uid": "04367F5A2D7280"
+  },
+  "relay": {
+    "enabled": true,
+    "gpio_bcm": 17,
+    "active_low": true,
+    "default_power_on": true
+  },
+  "mock_mode": false
+}
