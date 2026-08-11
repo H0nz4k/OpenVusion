@@ -1,57 +1,43 @@
-# OpenVusion — nRF52840 RF tooling
+# OpenVusion — nRF52840 RF research tooling
 
-Tato část repozitáře obsahuje dva verzované nástroje pro pasivní 2,4GHz RF
-výzkum VUSION tagu.
-
-## Aktuální kompatibilní dvojice
-
-| Komponenta | Verze | Úloha |
-|---|---:|---|
-| [OpenVusion RF Probe](OpenVusion_RF_Probe/) | **0.6.1** | firmware pro Nordic nRF52840 Dongle |
-| [WaterFall](WaterFall/) | **0.3.0** | živý webový monitor pro Raspberry Pi |
-
-## Datový tok
+Tato část repozitáře obsahuje dvě verzované komponenty:
 
 ```text
-2.4 GHz RF
-    ↓
-Nordic nRF52840 Dongle
-OpenVusion RF Probe v0.6.1
-    ↓ USB CDC
-Raspberry Pi 3
-    ↓
-WaterFall v0.3.0
-    ├─ live spectrum
-    ├─ waterfall
-    ├─ baseline / Δ
-    ├─ CSV capture
-    ├─ experiment timeline
-    ├─ TWN4/NFC markery
-    └─ GPIO relay markery
+OpenVusion_RF_Probe/   firmware pro Nordic nRF52840 Dongle
+WaterFall/             webová RF/BLE/capture konzole pro Raspberry Pi
 ```
 
-## Stav
-
-USB transport firmware v0.6.1 je fyzicky ověřen na Raspberry Pi:
+Aktuální vývojový pár:
 
 ```text
-1× CDC ACM          PASS
-PING/PONG           PASS
-INFO                PASS
-ONCE RSSI sweep     PASS
+OpenVusion RF Probe 0.7.0
+WaterFall           0.4.0
 ```
 
-První `ONCE` sweep v rozsahu 2400–2500 MHz byl získán. Další krok je
-kalibrační/pozitivní RF kontrola pomocí známého 2,4GHz zdroje před tím, než
-budou amplitudy interpretovány jako VUSION provoz.
+Poslední fyzicky ověřený firmware je stále `0.6.1`; `0.7.0` je nová zdrojová
+verze, která musí projít clean build + fyzickým `test_usb.py` acceptance testem.
+
+## Role komponent
+
+**RF Probe** měří RSSI/energii. Není to SDR ani univerzální packet decoder.
+
+**WaterFall** kombinuje RF survey, focused watch, BLE host-side inventář, TWN4/NFC,
+GPIO markery, multi-source capture sessions a offline PCAP/tshark analýzu.
+
+Podrobnosti jsou v samostatných README:
+
+- [`OpenVusion_RF_Probe/README.md`](OpenVusion_RF_Probe/README.md)
+- [`WaterFall/README.md`](WaterFall/README.md)
 
 ## Verzování
 
-Každá komponenta má:
+Každá komponenta má vlastní:
 
-- stabilní adresář bez čísla verze;
-- soubor `VERSION`;
-- `CHANGELOG.md`;
-- vlastní `README.md`.
+```text
+VERSION
+CHANGELOG.md
+README.md
+```
 
-Historické poznámky a výzkumné výsledky zůstávají v dokumentaci projektu.
+Adresář samotný není verzovaný názvem. Release číslo se mění v `VERSION` a
+historie je v changelogu.

@@ -1,0 +1,19 @@
+{
+  "component": "OpenVusion_RF_Probe",
+  "version": "0.7.0",
+  "sha256": {
+    "CHANGELOG.md": "5df5244bebfb06afd2947f3a230601daec45e871c8b405ada9f79c37023b297e",
+    "CMakeLists.txt": "2b945b15460c35a515a41cb9256af8c6fd50024b64399e5b4479f6abd8b748b0",
+    "README.md": "59df301bba7f43c08b5492f8ae0a9c388f9de25468ee47bfd1ae625ca45136d9",
+    "VALIDATION.md": "2df3bc703f081b0ca1cb64f1b57aff5b859636ecaa3753e51813b89af78b0310",
+    "VERSION": "967d9afb101346667166f2e76e81910bc190488d7d41d50ca0072e9d92f00e32",
+    "WHY_V05_FAILED.md": "909f9286966640d947a09069681371c6566e33c5b23958c5ba9572b9084edb14",
+    "build_clean.ps1": "902a7a98ff15d23e879d2c591772e3b8d6ecaa1e950622130094a2bd4ea43ba6",
+    "build_clean.sh": "6c6e12d2fba5909e9c92f77b49749e883e63f5abaef87ebc09e4dd7938c68137",
+    "prj.conf": "6a9fe135ab50e4648f5b59db51fd19aefa023b59444b1c95387193d4acef10bd",
+    "rf_collect.py": "2e2cce7b7b7a11dd8ab3b9f007cc748857791608048f6bade013899cedaa9118",
+    "src/main.c": "4bbd867e41a253ecf6d8fbb607b840e7e0ed6cb7dc4368dfed9950355490fe18",
+    "test_usb.py": "fc71a86ed096b6af09919777d94673265cfaeeb4ff9a2bd9734c3d337e760fea",
+    "verify_build.py": "9947db358a686849f7f0af79003d49612eef7c35d7af993f7438986f5d438895"
+  }
+}

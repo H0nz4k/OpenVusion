@@ -11,6 +11,8 @@ cfg["nfc_reader"]["enabled"] = False
 cfg["relay"]["enabled"] = False
 cfg["csv_dir"] = "/tmp/waterfall/captures"
 cfg["experiment_dir"] = "/tmp/waterfall/experiments"
+cfg["capture_dir"] = "/tmp/waterfall/sessions"
+cfg["pcap_dir"] = "/tmp/waterfall/pcap"
 json.dump(cfg, open(dst, "w", encoding="utf-8"), indent=2)
 PY
 export WATERFALL_CONFIG="$TMP"

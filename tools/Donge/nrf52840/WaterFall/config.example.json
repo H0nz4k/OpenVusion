@@ -1,9 +1,21 @@
 {
   "host": "0.0.0.0",
   "port": 8088,
-  "history_sweeps": 240,
+  "history_sweeps": 300,
+  "packet_history": 1500,
+  "watch_history": 2000,
+  "rf_event_history": 750,
   "csv_dir": "/var/lib/waterfall/captures",
   "experiment_dir": "/var/lib/waterfall/experiments",
+  "capture_dir": "/var/lib/waterfall/sessions",
+  "pcap_dir": "/var/lib/waterfall/pcap",
+  "pcap_max_upload_mb": 100,
+  "analyzer": {
+    "threshold_above_median_db": 12,
+    "absolute_floor_dbm": -92,
+    "max_gap_mhz": 2,
+    "min_bins": 1
+  },
   "rf_probe": {
     "enabled": true,
     "serial_port": "auto",
@@ -14,6 +26,13 @@
     "baudrate": 115200,
     "auto_scan": true,
     "connect_delay_ms": 350
+  },
+  "ble_observer": {
+    "enabled": true,
+    "autostart": false,
+    "adapter": "hci0",
+    "scan_mode": "active",
+    "allow_active_fallback": false
   },
   "nfc_reader": {
     "enabled": true,

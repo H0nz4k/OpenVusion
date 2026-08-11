@@ -16,7 +16,7 @@
 #include <string.h>
 
 /*
- * OpenVusion RF Probe v0.6.1
+ * OpenVusion RF Probe v0.7.0
  *
  * USB design:
  *   - Zephyr USB device-next stack
@@ -31,7 +31,7 @@
  *   - there is intentionally no TASKS_TXEN anywhere in this source
  */
 
-#define FW_NAME "OpenVusion_RF_Probe_v0.6.1"
+#define FW_NAME "OpenVusion_RF_Probe_v0.7.0"
 
 #define LED0_NODE DT_ALIAS(led0)
 #define BOARD_CDC_NODE DT_NODELABEL(board_cdc_acm_uart)
@@ -80,7 +80,7 @@ USBD_DEVICE_DEFINE(openvusion_usbd,
 
 USBD_DESC_LANG_DEFINE(openvusion_lang);
 USBD_DESC_MANUFACTURER_DEFINE(openvusion_mfr, "OpenVusion Research");
-USBD_DESC_PRODUCT_DEFINE(openvusion_product, "OpenVusion RF Probe v0.6.1");
+USBD_DESC_PRODUCT_DEFINE(openvusion_product, "OpenVusion RF Probe v0.7.0");
 USBD_DESC_SERIAL_NUMBER_DEFINE(openvusion_sn);
 USBD_DESC_CONFIG_DEFINE(openvusion_fs_desc, "OpenVusion FS");
 
@@ -346,10 +346,37 @@ static int openvusion_usb_init(void)
 
 static bool radio_initialized;
 static bool scan_enabled;
+static bool watch_enabled;
 static uint8_t scan_first_ch = 0;
 static uint8_t scan_last_ch = 100;
+static uint8_t sweep_step_mhz = 1;
 static uint16_t dwell_ms = 4;
+static uint16_t watch_period_ms = 20;
+static uint8_t watch_ch = 53; /* 2453 MHz */
 static uint32_t sweep_no;
+static uint32_t watch_no;
+static int64_t watch_next_ms;
+
+enum rssi_sample_mode {
+    RSSI_SAMPLE_LAST = 0,
+    RSSI_SAMPLE_MAX,
+    RSSI_SAMPLE_AVG,
+};
+
+static enum rssi_sample_mode rssi_mode = RSSI_SAMPLE_LAST;
+
+static const char *rssi_mode_name(void)
+{
+    switch (rssi_mode) {
+    case RSSI_SAMPLE_MAX:
+        return "MAX";
+    case RSSI_SAMPLE_AVG:
+        return "AVG";
+    case RSSI_SAMPLE_LAST:
+    default:
+        return "LAST";
+    }
+}
 
 
 static int radio_disable_safe(void)
@@ -428,9 +455,35 @@ static int sample_rssi_channel(uint8_t ch, int8_t *out_rssi)
     }
 
     NRF_RADIO->TASKS_RSSISTART = 1;
-    k_sleep(K_MSEC(dwell_ms));
 
-    *out_rssi = -(int8_t)NRF_RADIO->RSSISAMPLE;
+    int strongest = -127;
+    int sum = 0;
+    uint16_t samples = 0;
+
+    /*
+     * LAST preserves the v0.6.1 behaviour. MAX and AVG sample the running
+     * RSSI register once per millisecond during the dwell window. MAX is
+     * useful for short bursts; AVG is useful for a smoother noise floor.
+     */
+    for (uint16_t i = 0; i < dwell_ms; i++) {
+        k_sleep(K_MSEC(1));
+        int sample = -(int8_t)NRF_RADIO->RSSISAMPLE;
+        if (samples == 0U || sample > strongest) {
+            strongest = sample;
+        }
+        sum += sample;
+        samples++;
+    }
+
+    if (samples == 0U) {
+        *out_rssi = -(int8_t)NRF_RADIO->RSSISAMPLE;
+    } else if (rssi_mode == RSSI_SAMPLE_MAX) {
+        *out_rssi = (int8_t)strongest;
+    } else if (rssi_mode == RSSI_SAMPLE_AVG) {
+        *out_rssi = (int8_t)(sum / (int)samples);
+    } else {
+        *out_rssi = -(int8_t)NRF_RADIO->RSSISAMPLE;
+    }
 
     NRF_RADIO->TASKS_RSSISTOP = 1;
 
@@ -463,6 +516,12 @@ static void print_info(void)
                2400U + scan_first_ch,
                2400U + scan_last_ch);
     cdc_printf("DWELL_MS=%u\r\n", dwell_ms);
+    cdc_printf("STEP_MHZ=%u\r\n", sweep_step_mhz);
+    cdc_printf("RSSI_MODE=%s\r\n", rssi_mode_name());
+    cdc_printf("SCAN=%u\r\n", scan_enabled ? 1U : 0U);
+    cdc_printf("WATCH=%u\r\n", watch_enabled ? 1U : 0U);
+    cdc_printf("WATCH_FREQ_MHZ=%u\r\n", 2400U + watch_ch);
+    cdc_printf("WATCH_PERIOD_MS=%u\r\n", watch_period_ms);
 }
 
 
@@ -482,7 +541,7 @@ static int run_one_sweep(void)
 
     for (uint16_t ch = scan_first_ch;
          ch <= scan_last_ch;
-         ch++) {
+         ch += sweep_step_mhz) {
 
         int8_t rssi = 0;
 
@@ -500,14 +559,38 @@ static int run_one_sweep(void)
 }
 
 
+static int run_watch_sample(void)
+{
+    int8_t rssi = 0;
+    int ret = sample_rssi_channel(watch_ch, &rssi);
+
+    if (ret != 0) {
+        cdc_printf("ERR WATCH_SAMPLE=%d\r\n", ret);
+        return ret;
+    }
+
+    watch_no++;
+    cdc_printf("RSSI,%u,%lld,%u,%d,%s\r\n",
+               watch_no,
+               (long long)k_uptime_get(),
+               2400U + watch_ch,
+               rssi,
+               rssi_mode_name());
+    return 0;
+}
+
+
 static void handle_command(char *cmd)
 {
     unsigned int a;
     unsigned int b;
     unsigned int v;
+    unsigned int freq;
+    unsigned int period;
+    char mode[8];
 
     if (!strcmp(cmd, "PING") || !strcmp(cmd, "ping")) {
-        cdc_write("PONG v0.6.1\r\n");
+        cdc_write("PONG v0.7.0\r\n");
 
     } else if (!strcmp(cmd, "INFO") || !strcmp(cmd, "info")) {
         print_info();
@@ -515,7 +598,8 @@ static void handle_command(char *cmd)
     } else if (!strcmp(cmd, "HELP") || !strcmp(cmd, "help")) {
         cdc_write(
             "PING | INFO | HELP | ONCE | SCAN START | SCAN STOP | "
-            "RANGE a b | DWELL ms\r\n"
+            "RANGE a b | DWELL ms | STEP 1|2|5|10 | RSSI MODE LAST|MAX|AVG | "
+            "WATCH START 2400..2500 period_ms | WATCH STOP\r\n"
         );
 
     } else if (!strcmp(cmd, "ONCE") || !strcmp(cmd, "once")) {
@@ -523,6 +607,7 @@ static void handle_command(char *cmd)
 
     } else if (!strcmp(cmd, "SCAN START") ||
                !strcmp(cmd, "scan start")) {
+        watch_enabled = false;
         scan_enabled = true;
         cdc_write("OK SCAN=ON\r\n");
 
@@ -533,30 +618,74 @@ static void handle_command(char *cmd)
 
     } else if (sscanf(cmd, "RANGE %u %u", &a, &b) == 2 ||
                sscanf(cmd, "range %u %u", &a, &b) == 2) {
-
         if (a <= b && b <= 100U) {
             scan_first_ch = (uint8_t)a;
             scan_last_ch = (uint8_t)b;
             cdc_printf("OK RANGE=%u..%u (%u..%uMHz)\r\n",
-                       scan_first_ch,
-                       scan_last_ch,
-                       2400U + scan_first_ch,
-                       2400U + scan_last_ch);
+                       scan_first_ch, scan_last_ch,
+                       2400U + scan_first_ch, 2400U + scan_last_ch);
         } else {
-            cdc_write(
-                "ERR RANGE must satisfy 0 <= first <= last <= 100\r\n"
-            );
+            cdc_write("ERR RANGE must satisfy 0 <= first <= last <= 100\r\n");
         }
 
     } else if (sscanf(cmd, "DWELL %u", &v) == 1 ||
                sscanf(cmd, "dwell %u", &v) == 1) {
-
         if (v >= 1U && v <= 100U) {
             dwell_ms = (uint16_t)v;
             cdc_printf("OK DWELL_MS=%u\r\n", dwell_ms);
         } else {
             cdc_write("ERR DWELL must be 1..100 ms\r\n");
         }
+
+    } else if (sscanf(cmd, "STEP %u", &v) == 1 ||
+               sscanf(cmd, "step %u", &v) == 1) {
+        if (v == 1U || v == 2U || v == 5U || v == 10U) {
+            sweep_step_mhz = (uint8_t)v;
+            cdc_printf("OK STEP_MHZ=%u\r\n", sweep_step_mhz);
+        } else {
+            cdc_write("ERR STEP must be 1,2,5,10 MHz\r\n");
+        }
+
+    } else if (sscanf(cmd, "RSSI MODE %7s", mode) == 1 ||
+               sscanf(cmd, "rssi mode %7s", mode) == 1) {
+        for (size_t i = 0; mode[i] != '\0'; i++) {
+            if (mode[i] >= 'a' && mode[i] <= 'z') {
+                mode[i] = (char)(mode[i] - 'a' + 'A');
+            }
+        }
+        if (!strcmp(mode, "LAST")) {
+            rssi_mode = RSSI_SAMPLE_LAST;
+        } else if (!strcmp(mode, "MAX")) {
+            rssi_mode = RSSI_SAMPLE_MAX;
+        } else if (!strcmp(mode, "AVG")) {
+            rssi_mode = RSSI_SAMPLE_AVG;
+        } else {
+            cdc_write("ERR RSSI MODE must be LAST|MAX|AVG\r\n");
+            return;
+        }
+        cdc_printf("OK RSSI_MODE=%s\r\n", rssi_mode_name());
+
+    } else if (sscanf(cmd, "WATCH START %u %u", &freq, &period) == 2 ||
+               sscanf(cmd, "watch start %u %u", &freq, &period) == 2) {
+        if (freq >= 2400U && freq <= 2500U &&
+            period >= 5U && period <= 5000U) {
+            scan_enabled = false;
+            watch_ch = (uint8_t)(freq - 2400U);
+            watch_period_ms = (uint16_t)period;
+            watch_no = 0U;
+            watch_next_ms = 0;
+            watch_enabled = true;
+            cdc_printf("OK WATCH=ON FREQ=%u PERIOD_MS=%u\r\n",
+                       freq, watch_period_ms);
+        } else {
+            cdc_write("ERR WATCH START freq=2400..2500 period=5..5000ms\r\n");
+        }
+
+    } else if (!strcmp(cmd, "WATCH STOP") ||
+               !strcmp(cmd, "watch stop")) {
+        watch_enabled = false;
+        watch_next_ms = 0;
+        cdc_write("OK WATCH=OFF\r\n");
 
     } else if (cmd[0] != '\0') {
         cdc_printf("ERR unknown command: %s\r\n", cmd);
@@ -636,7 +765,13 @@ int main(void)
             uart_irq_rx_enable(cdc_dev);
         }
 
-        if (scan_enabled && usb_dtr) {
+        if (watch_enabled && usb_dtr) {
+            int64_t now = k_uptime_get();
+            if (watch_next_ms == 0 || now >= watch_next_ms) {
+                (void)run_watch_sample();
+                watch_next_ms = now + watch_period_ms;
+            }
+        } else if (scan_enabled && usb_dtr) {
             (void)run_one_sweep();
         }
 

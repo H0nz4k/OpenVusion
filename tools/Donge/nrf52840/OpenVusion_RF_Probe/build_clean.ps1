@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 
-Write-Host "OpenVusion RF Probe v0.6.1 - deterministic clean build"
+Write-Host "OpenVusion RF Probe v0.7.0 - deterministic clean build"
 Write-Host "Target: nrf52840dongle/nrf52840"
 
 $env:CCACHE_DISABLE = "1"

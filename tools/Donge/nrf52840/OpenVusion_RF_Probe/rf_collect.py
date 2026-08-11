@@ -30,11 +30,11 @@ def main():
     port = args.port or discover_one()
     if not port:
         raise SystemExit(
-            "Nelze jednoznačně najít OpenVusion v0.6.1 (VID:PID 2fe3:0001)."
+            "Nelze jednoznačně najít OpenVusion v0.7.0 (VID:PID 2fe3:0001)."
         )
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out = Path(args.out or f"openvusion_rf_v061_{stamp}.csv")
+    out = Path(args.out or f"openvusion_rf_v070_{stamp}.csv")
 
     with serial.Serial(
         port,
