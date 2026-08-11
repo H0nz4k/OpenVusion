@@ -2,6 +2,24 @@
 
 Formát verzí: `MAJOR.MINOR.PATCH`.
 
+## 0.7.0 — 2026-08-11
+
+Nová zdrojová verze pro WaterFall 0.4.0.
+
+- přidán `STEP 1|2|5|10` pro frekvenční krok sweepu;
+- přidán `RSSI MODE LAST|MAX|AVG`;
+- přidán `WATCH START <freq> <period_ms>`;
+- přidán `WATCH STOP`;
+- nový focused-watch výstup `RSSI,<seq>,<device_ms>,<freq>,<rssi>,<mode>`;
+- `SCAN START` a `WATCH START` jsou vzájemně výlučné;
+- INFO hlásí STEP, RSSI MODE, SCAN a WATCH stav;
+- `test_usb.py` rozšířen o feature acceptance STEP/RSSI/WATCH;
+- verifier kontroluje nové source invariants a absenci skutečné TXEN operace;
+- USB architektura z fyzicky ověřené 0.6.1 zůstala zachována.
+
+**Stav:** zdroj staticky ověřen, ale 0.7.0 zatím není fyzicky build/flash/runtime
+acceptance potvrzená. Poslední fyzicky ověřený fallback je 0.6.1.
+
 ## 0.6.1 — 2026-08-11
 
 První verze ověřená na reálném Nordic nRF52840 Dongle + Raspberry Pi 3.
